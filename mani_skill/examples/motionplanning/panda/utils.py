@@ -1,3 +1,5 @@
+from typing import Any, Dict, List, Optional, Union
+
 import numpy as np
 import sapien
 import sapien.physx as physx
@@ -21,6 +23,17 @@ def get_actor_obb(actor: Actor, to_world_frame=True, vis=False):
     if vis:
         obb.visual.vertex_colors = (255, 0, 0, 10)
         trimesh.Scene([mesh, obb]).show()
+
+    return obb
+
+def get_articulate_obb(meshes: List[List[trimesh.Trimesh]], vis=False):
+    assert meshes is not None, "can not get actor mesh"
+
+    obb: trimesh.primitives.Box = meshes[0][0].bounding_box_oriented
+
+    if vis:
+        obb.visual.vertex_colors = (255, 0, 0, 10)
+        trimesh.Scene([meshes[0][0], obb]).show()
 
     return obb
 

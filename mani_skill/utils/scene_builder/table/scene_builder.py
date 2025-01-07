@@ -66,7 +66,7 @@ class TableSceneBuilder(SceneBuilder):
             qpos = np.array(
                 [
                     0.0,
-                    np.pi / 8,
+                    np.pi * 0 / 8,
                     0,
                     -np.pi * 5 / 8,
                     0,
@@ -96,7 +96,7 @@ class TableSceneBuilder(SceneBuilder):
         elif self.env.robot_uids == "panda_wristcam":
             # fmt: off
             qpos = np.array(
-                [0.0, np.pi / 8, 0, -np.pi * 5 / 8, 0, np.pi * 3 / 4, -np.pi / 4, 0.04, 0.04]
+                [0.0, -np.pi * 1 / 8, 0, -np.pi * 6 / 8, 0, np.pi * 3 / 4, np.pi / 4, 0.04, 0.04]
             )
             # fmt: on
             if self.env._enhanced_determinism:

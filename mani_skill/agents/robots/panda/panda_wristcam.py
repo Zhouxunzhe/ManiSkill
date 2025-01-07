@@ -24,7 +24,7 @@ class PandaWristCam(Panda):
                 pose=sapien.Pose(p=[0, 0, 0], q=[1, 0, 0, 0]),
                 width=128,
                 height=128,
-                fov=np.pi / 2,
+                fov=np.deg2rad(155),
                 near=0.01,
                 far=100,
                 mount=self.robot.links_map["camera_link"],
