@@ -188,65 +188,6 @@ class Camera(BaseSensor):
     def capture(self):
         self.camera.take_picture()
 
-    def create_fisheye_mapping(self, height, width, fov_degrees=155):
-        y, x = torch.meshgrid(
-            torch.linspace(-1, 1, height),
-            torch.linspace(-1, 1, width),
-            indexing='ij'
-        )
-
-        r = torch.sqrt(x ** 2 + y ** 2)
-        theta = torch.atan2(y, x)
-
-        mask = (r <= 1).float()
-
-        fov_rad = np.deg2rad(fov_degrees)
-        r_fisheye = r * (fov_rad / 2)
-
-        x_fisheye = r_fisheye * torch.cos(theta)
-        y_fisheye = r_fisheye * torch.sin(theta)
-
-        x_fisheye = x_fisheye / (fov_rad / 2)
-        y_fisheye = y_fisheye / (fov_rad / 2)
-
-        grid = torch.stack([x_fisheye, y_fisheye], dim=-1)
-        grid = grid * mask.unsqueeze(-1)
-
-        return grid, mask
-
-    def apply_fisheye_transform(self, image_tensor, output_size=(128, 128)):
-        """
-        Apply fisheye transformation to image tensor in BHWC format.
-
-        Args:
-            image_tensor: Input tensor of shape [B, H, W, C]
-            output_size: Tuple of (height, width) for output image
-        """
-        # Convert BHWC to BCHW
-        image_tensor = image_tensor.permute(0, 3, 1, 2)
-
-        grid, mask = self.create_fisheye_mapping(output_size[0], output_size[1])
-        grid = grid.to(image_tensor.device)
-        mask = mask.to(image_tensor.device)
-
-        grid = grid.unsqueeze(0).repeat(image_tensor.shape[0], 1, 1, 1)
-
-        output = F.grid_sample(
-            image_tensor,
-            grid,
-            mode='bilinear',
-            padding_mode='zeros',
-            align_corners=True
-        )
-
-        mask = mask.unsqueeze(0).unsqueeze(1)
-        output = output * mask
-
-        # Convert back to BHWC
-        output = output.permute(0, 2, 3, 1)
-
-        return output
-
     def get_obs(
         self,
         rgb: bool = True,
@@ -281,10 +222,37 @@ class Camera(BaseSensor):
 
         # fetch the image data
         output_textures = self.camera.get_picture(required_texture_names)
-        # TODO(zxz)
-        fisheye = True
-        if fisheye:
-            output_textures[0] = self.apply_fisheye_transform(output_textures[0].to(torch.float32))
+        ### TODO(zxz): refine FishEye
+        # if fisheye:
+        #     import cv2
+        #     def pinhole_to_fisheye(img, focal_length, crop_size):
+        #         h, w = img.shape[0], img.shape[1]
+        #         dstImg = np.zeros(img.shape, np.uint8)
+        #         ux, uy = w / 2, h / 2
+        #         for i in range(h):
+        #             for j in range(w):
+        #                 dx, dy = j - ux, i - uy
+        #                 rc = np.sqrt(dx ** 2 + dy ** 2)
+        #                 theta = np.arctan2(rc, focal_length)
+        #                 gama = np.arctan2(dy, dx)
+        #                 rf = focal_length * theta
+        #                 xf = rf * np.cos(gama)
+        #                 yf = rf * np.sin(gama)
+        #                 x = int(xf + ux)
+        #                 y = int(yf + uy)
+        #                 dstImg[y][x] = img[i][j]
+        #         crop_x = crop_size[0] // 2
+        #         crop_y = crop_size[1] // 2
+        #         dstImg = dstImg[int(uy-crop_y):int(uy+crop_y), int(ux-crop_x):int(ux+crop_x)]
+        #         return dstImg
+        #
+        #     crop_size = (128, 128)
+        #     pinhole_image = (output_textures[0][0][:,:,:3].numpy() * 255).astype(np.uint8).copy()
+        #     focal_length = 100
+        #     fisheye_image = pinhole_to_fisheye(pinhole_image, focal_length, crop_size)
+        #     cv2.imwrite("fisheye_image.jpg", fisheye_image)
+        #     output_textures[0][0][0][:,:,:3] = fisheye_image
+
         for texture_name, texture in zip(required_texture_names, output_textures):
             if apply_texture_transforms:
                 images_dict |= self.config.shader_config.texture_transforms[

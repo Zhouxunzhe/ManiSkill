@@ -316,6 +316,8 @@ if __name__ == "__main__":
     ema.copy_to(ema_agent.parameters())
     # def sample_fn(obs):
 
+    envs.envs[0].base_env.model = agent
+
     eval_metrics = evaluate(
         args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
     )
@@ -328,6 +330,22 @@ if __name__ == "__main__":
         print(f"{k}: {eval_metrics[k]:.4f}")
 
     save_on_best_metrics = ["success_once", "success_at_end"]
+
+    import cv2
+    img_list = envs.envs[0].base_env.observations
+    frame_height, frame_width, _ = img_list[0].shape
+    fps = 30  # 每秒帧数
+    output_video = 'video.mp4'  # 输出的视频文件名
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 使用 mp4 格式
+    video_writer = cv2.VideoWriter(output_video, fourcc, fps, (frame_width, frame_height))
+    for img in img_list:
+        img = np.array(img, dtype=np.uint8)
+        if img.max() > 255:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        img_resized = cv2.resize(img, (frame_width, frame_height))
+        video_writer.write(img_resized)
+    print(f"总共有 {len(img_list)} 帧图像被写入视频")
+    video_writer.release()
     print("==================== Eval End ====================")
 
     envs.close()

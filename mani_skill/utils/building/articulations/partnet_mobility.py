@@ -10,15 +10,22 @@ from mani_skill.utils.io_utils import load_json
 PARTNET_MOBILITY = None
 
 
-def _load_partnet_mobility_dataset():
+def _load_partnet_mobility_dataset(mode):
     global PARTNET_MOBILITY
     """loads preprocssed partnet mobility metadata"""
     # load suitcase partnet model
-    PARTNET_MOBILITY = {
-        "model_data": load_json(
-            PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_suitcase.json"
-        ),
-    }
+    if mode == "train":
+        PARTNET_MOBILITY = {
+            "model_data": load_json(
+                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_train.json"
+            ),
+        }
+    elif mode == "eval":
+        PARTNET_MOBILITY = {
+            "model_data": load_json(
+                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_eval.json"
+            ),
+        }
     # PARTNET_MOBILITY = {
     #     "model_data": load_json(
     #         PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_cabinet_drawer_train.json"
@@ -55,10 +62,11 @@ def get_partnet_mobility_builder(
     id: str,
     fix_root_link: bool = True,
     urdf_config: dict = dict(),
+    mode: str = None,
 ):
     global PARTNET_MOBILITY
     if PARTNET_MOBILITY is None:
-        _load_partnet_mobility_dataset()
+        _load_partnet_mobility_dataset(mode)
     metadata = PARTNET_MOBILITY["model_data"][id]
     loader = scene.create_urdf_loader()
     loader.fix_root_link = fix_root_link

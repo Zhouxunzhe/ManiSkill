@@ -9,6 +9,7 @@ def get_articulation_builder(
     id: str,
     fix_root_link: bool = True,
     urdf_config: dict = dict(),
+    mode: str = None
 ) -> ArticulationBuilder:
     """Builds an articulation or returns an articulation builder given an ID specifying which dataset/source and then the articulation ID
 
@@ -27,6 +28,7 @@ def get_articulation_builder(
             id=articulation_id,
             fix_root_link=fix_root_link,
             urdf_config=urdf_config,
+            mode=mode,
         )
     else:
         raise RuntimeError(f"No dataset with id {dataset_source} was found")

@@ -36,6 +36,12 @@ from mani_skill.utils.scene_builder.table import TableSceneBuilder
 from mani_skill.utils.geometry.geometry import transform_points
 from mani_skill.utils.structs import Pose, Articulation, Link
 from mani_skill.utils.structs.types import Array, GPUMemoryConfig, SimConfig
+from mani_skill.envs.utils.observations import (
+    sensor_data_to_pointcloud,
+)
+from mani_skill.sensors.camera import (
+    Camera,
+)
 
 SUITCASE_COLLISION_BIT = 29
 
@@ -56,31 +62,57 @@ class FoldSuitcaseEnv(BaseEnv):
     # _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/PushCube-v1_rt.mp4"
 
     SUPPORTED_ROBOTS = ["panda_wristcam"]
-    fixed_model_id = "103762"
-    # // "103762": {
-    # //     "num_target_links": 2,
-    # //     "partnet_mobility_id": 103762,
-    # //     "scale": 0.3
-    # // }
-    # ["100767", "101668", "103755", "103761", "103762"]
+    fixed_model_id = "9748"
+
+    # suitcase
+    suitcase_list = ["100767", "101668", "103755", "103761", "103762"]  # Eval: "103762"
+    # box
+    box_list = ["100189", "102379",]
+    high_box_list = ["100141", "47645", "48492", "100174", "100214", "100221", "100243", "100664", "102456"]  # Eval: "100214"
+    # laptop
+    laptop_list = [
+        "9748", "9912", "9960", "9968", "9992", "9996", "10040",
+        "10098", "10101", "10125", "10211", "10213", "10238", "10239", "10243",
+        "10248", "10269", "10270", "10280", "10289", "10305", "10306", "10383",
+        "10626", "10697", "10707", "10885", "10915", "11030", "11075", "11141", "11156",
+        "11242", "11248", "11395", "11405", "11406", "11429", "11477", "11581",
+        "11586", "11691", "11778", "11854", "11876", "11888", "11945", "12073", "12115"
+    ]
+    laptop_90 = [
+        "9912", "10125", "10213", "10243", "10248", "10270", "10280", "10306", "10885", "11030", "11156",
+        "11248", "11395", "11406", "11429", "11586", "11778", "11854", "11876", "11888", "11945"
+    ]  # Eval: "10280", "11778",
+    laptop_135 = [
+        "9960", "10098", "10211", "10239", "10269", "10289", "10383", "10626", "10697", "10915", "11075",
+        "11405", "11477", "11538", "11581", "11691", "12073"]  # Eval: "10289", "11581",
+    laptop_180 = [
+        "9748", "9968", "9992", "9996", "10040", "10101", "10238", "10305", "10356", "10707",
+        "11141", "11242"]  # Eval: "10101"
     # TODO(zxz)
-    random_id = True
+    mode = "train"  # "train" / "eval"
+    observations = []
 
     # Specify some supported robot types
     agent: Union[Panda, Fetch]
     lid_types = ["revolute_unwrapped", "prismatic"]
-    TRAIN_JSON = (
-            PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_suitcase.json"
-    )
+    if mode == "train":
+        JSON = (
+            PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_train.json"
+        )
+    elif mode == "eval":
+        JSON = (
+                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_eval.json"
+        )
 
     # set some commonly used values
     max_close_frac = 0.25
     suitcase_half_size = 0.2
 
-    def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, **kwargs):
+    def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, model=None, **kwargs):
         # specifying robot_uids="panda" as the default means gym.make("PushCube-v1") will default to using the panda arm.
         self.robot_init_qpos_noise = robot_init_qpos_noise
-        train_data = load_json(self.TRAIN_JSON)
+        train_data = load_json(self.JSON)
+        self.model = model
         self.all_model_ids = np.array(list(train_data.keys()))
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
 
@@ -130,7 +162,17 @@ class FoldSuitcaseEnv(BaseEnv):
         self.table_scene.build()
 
         # load suitcase
-        self._load_suitcase(self.lid_types)
+        model_ids = self._batched_episode_rng.choice(self.all_model_ids)
+        link_ids = self._batched_episode_rng.randint(0, 2 ** 31)
+        for i, model_id in enumerate(model_ids):
+            if model_id in self.suitcase_list:
+                self._load_suitcase(self.lid_types, [model_id], [link_ids[i]])
+            elif model_id in self.box_list:
+                self._load_box(self.lid_types, [model_id], [link_ids[i]])
+            elif model_id in self.high_box_list:
+                self._load_high_box(self.lid_types, [model_id], [link_ids[i]])
+            elif model_id in self.laptop_list:
+                self._load_laptop(self.lid_types, [model_id], [link_ids[i]])
 
     def _transform_point(self, origin_base: sapien.Pose, new_base: sapien.Pose, origin_pos: sapien.Pose):
         from scipy.spatial.transform import Rotation
@@ -162,11 +204,9 @@ class FoldSuitcaseEnv(BaseEnv):
         )
         return new_pos
 
-    def _load_suitcase(self, joint_types: List[str]):
+    def _load_suitcase(self, joint_types: List[str], model_ids, link_ids):
         # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
         # GPU/CPU simulation backends. This is useful for replaying demonstrations.
-        model_ids = self._batched_episode_rng.choice(self.all_model_ids)
-        link_ids = self._batched_episode_rng.randint(0, 2 ** 31)
 
         self._suitcases = []
         self.lid_links: List[List[Link]] = []
@@ -175,11 +215,8 @@ class FoldSuitcaseEnv(BaseEnv):
             # partnet-mobility is a dataset source and the ids are the ones we sampled
             # we provide tools to easily create the articulation builder like so by querying
             # the dataset source and unique ID
-            if not self.random_id:
-                model_id = self.fixed_model_id
-            self.model_id = model_id
             suitcase_builder = articulations.get_articulation_builder(
-                self.scene, f"partnet-mobility:{model_id}"
+                self.scene, f"partnet-mobility:{model_id}", mode=self.mode
             )
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
             self.origin_base = sapien.Pose(
@@ -230,105 +267,762 @@ class FoldSuitcaseEnv(BaseEnv):
                         )[0]
                     )
 
-        # we can merge different articulations/links with different degrees of freedoms into a single view/object
-        # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
-        # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-        self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
-        self.add_to_state_dict_registry(self.suitcase)
+            # we can merge different articulations/links with different degrees of freedoms into a single view/object
+            # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
+            # and with high performance. Note that some properties such as qpos and qlimits are now padded.
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.add_to_state_dict_registry(self.suitcase)
 
-        qpos_max = []
-        for i in range(len(self.lid_links[0])):
-            target_qlimits = self.lid_links[0][i].joint.limits  # [b, 1, 2]
-            qmin, qmax = target_qlimits[..., 0], target_qlimits[..., 1]
-            qpos_max.append(qmax)
+            qpos_max = []
+            for i in range(len(self.lid_links[0])):
+                target_qlimits = self.lid_links[0][i].joint.limits  # [b, 1, 2]
+                qmin, qmax = target_qlimits[..., 0], target_qlimits[..., 1]
+                qpos_max.append(qmax)
 
-        # self.lid_links[0][0].joint.set_qpos(qpos_max)
+            # self.lid_links[0][0].joint.set_qpos(qpos_max)
 
-        self.lid_link = Link.merge(
-            [links[link_ids[i] % len(links)] for i, links in enumerate(self.lid_links)],
-            name="lid_link",
-        )
-
-        if self.model_id == "103762":
-            self.lid_link = self.lid_links[0][0]
-        # store the position of the lid mesh itself relative to the link it is apart of
-        self.lid_link_pos = common.to_tensor(
-            np.array(
-                [
-                    meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
-                    if meshes[link_ids[i] % len(meshes)] is not None else np.array([0., 0., 0.])
-                    for i, meshes in enumerate(self.lid_links_meshes)
-                ]
-            ),
-            device=self.device,
-        )
-
-        self.waypoint_pos1 = self._transform_point(
-            self.origin_base,
-            self.new_base,
-            sapien.Pose(
-                p=[-0.2, 0.483, 0.4],
-                q=[-0.0, 1.000, 0, 0.0]
+            self.lid_link = Link.merge(
+                [links[link_ids[i] % len(links)] for i, links in enumerate(self.lid_links)],
+                name="lid_link",
             )
-        )
-        self.waypoint_pos2 = self._transform_point(
-            self.origin_base,
-            self.new_base,
-            sapien.Pose(
-                p=[-0.2, 0.32, 0.03],
-                q=[0.635, 0.772, 0.016, 0.015]
+
+            if model_id == "103762":
+                self.lid_link = self.lid_links[0][0]
+            # store the position of the lid mesh itself relative to the link it is apart of
+            self.lid_link_pos = common.to_tensor(
+                np.array(
+                    [
+                        meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
+                        if meshes[link_ids[i] % len(meshes)] is not None else np.array([0., 0., 0.])
+                        for i, meshes in enumerate(self.lid_links_meshes)
+                    ]
+                ),
+                device=self.device,
             )
-        )
-        if self.model_id == "103762":
+
+            self.waypoint_pos1 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.483, 0.4],
+                    q=[-0.0, 1.000, 0, 0.0]
+                )
+            )
             self.waypoint_pos2 = self._transform_point(
                 self.origin_base,
                 self.new_base,
                 sapien.Pose(
-                    p=[-0.2, 0.32, 0.12],
+                    p=[-0.2, 0.32, 0.03],
                     q=[0.635, 0.772, 0.016, 0.015]
                 )
             )
-        elif self.model_id == "100767":
+            if model_id == "103762":
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.32, 0.12],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            elif model_id == "100767":
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.35, 0.12],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            self.waypoint_pos3 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.23, 0.4],
+                    q=[0.3, 0.953, 0.012, 0.013]
+                )
+            )
+            self.waypoint_pos4 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.019, 0.4],
+                    q=[-0.086, 0.996, 0.004, 0.026]
+                )
+            )
+            self.waypoint_pos5 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.16, 0.23],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
+            )
+            self.waypoint_pos6 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.331, 0.347],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
+            )
+
+    def _load_laptop(self, joint_types: List[str], model_ids, link_ids):
+        # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
+        # GPU/CPU simulation backends. This is useful for replaying demonstrations.
+
+        self._suitcases = []
+        self.lid_links: List[List[Link]] = []
+        self.lid_links_meshes: List[List[trimesh.Trimesh]] = []
+        for i, model_id in enumerate(model_ids):
+            # partnet-mobility is a dataset source and the ids are the ones we sampled
+            # we provide tools to easily create the articulation builder like so by querying
+            # the dataset source and unique ID
+            suitcase_builder = articulations.get_articulation_builder(
+                self.scene, f"partnet-mobility:{model_id}", mode=self.mode
+            )
+            suitcase_builder.set_scene_idxs(scene_idxs=[i])
+            self.origin_base = sapien.Pose(
+                p=[-0.1,
+                   0,
+                   0 + self.suitcase_half_size],
+                q=euler2quat(
+                    0,
+                    0,
+                    np.pi / 2)
+            )
+            # random new base pose
+            self.new_base = suitcase_builder.initial_pose = sapien.Pose(
+                p=[-0.1 + np.random.uniform(-1, 1) * 0.02,
+                   -0.0 + np.random.uniform(-1, 1) * 0.02,
+                   -0. + self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
+                q=euler2quat(0,
+                             0 + np.random.uniform(-1, 1) * 1/16 * np.pi,
+                             np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi)
+            )
+            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
+            self.remove_from_state_dict_registry(suitcase)
+            # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
+            # that bit is also used to disable collision with the ground plane
+            for link in suitcase.links:
+                link.set_collision_group_bit(
+                    group=2, bit_idx=SUITCASE_COLLISION_BIT, bit=1
+                )
+            self._suitcases.append(suitcase)
+            self.lid_links.append([])
+            self.lid_links_meshes.append([])
+
+            # selecting semantic parts of articulations
+            for link, joint in zip(suitcase.links, suitcase.joints):
+                if joint.type[0] in joint_types:
+                    self.lid_links[-1].append(link)
+                    # save the first mesh in the link object that correspond with a lid
+                    self.lid_links_meshes[-1].append(
+                        link.generate_mesh(
+                            filter=lambda _, render_shape: "lid" in render_shape.name,
+                            mesh_name="lid",
+                        )[0]
+                    )
+
+            # we can merge different articulations/links with different degrees of freedoms into a single view/object
+            # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
+            # and with high performance. Note that some properties such as qpos and qlimits are now padded.
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.add_to_state_dict_registry(self.suitcase)
+
+            qpos_max = []
+            for i in range(len(self.lid_links[0])):
+                target_qlimits = self.lid_links[0][i].joint.limits  # [b, 1, 2]
+                qmin, qmax = target_qlimits[..., 0], target_qlimits[..., 1]
+                qpos_max.append(qmax)
+
+            # self.lid_links[0][0].joint.set_qpos(qpos_max)
+
+            self.lid_link = Link.merge(
+                [links[link_ids[i] % len(links)] for i, links in enumerate(self.lid_links)],
+                name="lid_link",
+            )
+
+            if model_id == "103762":
+                self.lid_link = self.lid_links[0][0]
+            # store the position of the lid mesh itself relative to the link it is apart of
+            self.lid_link_pos = common.to_tensor(
+                np.array(
+                    [
+                        meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
+                        if meshes[link_ids[i] % len(meshes)] is not None else np.array([0., 0., 0.])
+                        for i, meshes in enumerate(self.lid_links_meshes)
+                    ]
+                ),
+                device=self.device,
+            )
+
+            # waypoint 1
+            if model_id in self.laptop_180:
+                self.waypoint_pos1 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.483, 0.37],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            if model_id in self.laptop_90:
+                self.waypoint_pos1 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.13, 0.5],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            if model_id in ["11691"]:
+                self.waypoint_pos1 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.3, 0.5],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            elif model_id in self.laptop_135:
+                self.waypoint_pos1 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.45, 0.5],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+
+            # waypoint 2
+            if model_id in self.laptop_180:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.22, 0.15],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            if model_id in ["10885", "11945"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.15, 0.35],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            elif model_id in ["11030", "11248"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.08, 0.35],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            elif model_id in ["11888"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.04, 0.35],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            elif model_id in self.laptop_90:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.13, 0.35],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            if model_id in ["12073"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.23, 0.36],
+                        q=[0.3, 0.953, 0.012, 0.013]
+                    )
+                )
+            elif model_id in ["9960", "10269", "10289", "11477", "11581"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.23, 0.27],
+                        q=[0.3, 0.953, 0.012, 0.013]
+                    )
+                )
+            elif model_id in ["10098", "10915", "11242", "11405"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.23, 0.23],
+                        q=[0.3, 0.953, 0.012, 0.013]
+                    )
+                )
+            elif model_id in ["10383", "10626", "11075"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.23, 0.2],
+                        q=[0.3, 0.953, 0.012, 0.013]
+                    )
+                )
+            elif model_id in ["10697"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.23, 0.17],
+                        q=[0.6, 0.753, 0.012, 0.013]
+                    )
+                )
+            elif model_id in self.laptop_135:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.15, 0.3],
+                        q=[0.3, 0.953, 0.012, 0.013]
+                    )
+                )
+
+            # waypoint 3
+            self.waypoint_pos3 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.23, 0.3],
+                    q=[0.3, 0.953, 0.012, 0.013]
+                )
+            )
+            if model_id in self.laptop_90 or self.laptop_135:
+                self.waypoint_pos3 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.1, 0.35],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+
+            # waypoint 4
+            self.waypoint_pos4 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.019, 0.3],
+                    q=[-0.086, 0.996, 0.004, 0.026]
+                )
+            )
+
+            # waypoint 5
+            self.waypoint_pos5 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.16, 0.15],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
+            )
+
+            # # waypoint 6
+            self.waypoint_pos6 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.331, 0.247],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
+            )
+
+    def _load_box(self, joint_types: List[str], model_ids, link_ids):
+        # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
+        # GPU/CPU simulation backends. This is useful for replaying demonstrations.
+
+        self._suitcases = []
+        self.lid_links: List[List[Link]] = []
+        self.lid_links_meshes: List[List[trimesh.Trimesh]] = []
+        for i, model_id in enumerate(model_ids):
+            # partnet-mobility is a dataset source and the ids are the ones we sampled
+            # we provide tools to easily create the articulation builder like so by querying
+            # the dataset source and unique ID
+            suitcase_builder = articulations.get_articulation_builder(
+                self.scene, f"partnet-mobility:{model_id}", mode=self.mode
+            )
+            suitcase_builder.set_scene_idxs(scene_idxs=[i])
+            self.origin_base = sapien.Pose(
+                p=[-0.1,
+                   0,
+                   self.suitcase_half_size],
+                q=euler2quat(0,
+                             0,
+                             np.pi / 2)
+            )
+            # random new base pose
+            self.new_base = sapien.Pose(
+                p=[-0.1 + np.random.uniform(-1, 1) * 0.02,
+                   0 + np.random.uniform(-1, 1) * 0.02,
+                   self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
+                q=euler2quat(0,
+                             0 + np.random.uniform(-1, 1) * 1/16 * np.pi,
+                             np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi)
+            )
+            # self.new_base = self.origin_base
+            suitcase_builder.initial_pose = self.new_base
+            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
+            self.remove_from_state_dict_registry(suitcase)
+            # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
+            # that bit is also used to disable collision with the ground plane
+            for link in suitcase.links:
+                link.set_collision_group_bit(
+                    group=2, bit_idx=SUITCASE_COLLISION_BIT, bit=1
+                )
+            self._suitcases.append(suitcase)
+            self.lid_links.append([])
+            self.lid_links_meshes.append([])
+
+            # selecting semantic parts of articulations
+            for link, joint in zip(suitcase.links, suitcase.joints):
+                if joint.type[0] in joint_types:
+                    self.lid_links[-1].append(link)
+                    # save the first mesh in the link object that correspond with a lid
+                    self.lid_links_meshes[-1].append(
+                        link.generate_mesh(
+                            filter=lambda _, render_shape: "lid" in render_shape.name,
+                            mesh_name="lid",
+                        )[0]
+                    )
+
+            # we can merge different articulations/links with different degrees of freedoms into a single view/object
+            # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
+            # and with high performance. Note that some properties such as qpos and qlimits are now padded.
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.add_to_state_dict_registry(self.suitcase)
+
+            qpos_max = []
+            for i in range(len(self.lid_links[0])):
+                target_qlimits = self.lid_links[0][i].joint.limits  # [b, 1, 2]
+                qmin, qmax = target_qlimits[..., 0], target_qlimits[..., 1]
+                qpos_max.append(qmax/4)
+
+            # self.lid_links[0][0].joint.set_qpos(qpos_max)
+
+            self.lid_link = Link.merge(
+                [links[link_ids[i] % len(links)] for i, links in enumerate(self.lid_links)],
+                name="lid_link",
+            )
+
+            if model_id == "103762":
+                self.lid_link = self.lid_links[0][0]
+            # store the position of the lid mesh itself relative to the link it is apart of
+            self.lid_link_pos = common.to_tensor(
+                np.array(
+                    [
+                        meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
+                        if meshes[link_ids[i] % len(meshes)] is not None else np.array([0., 0., 0.])
+                        for i, meshes in enumerate(self.lid_links_meshes)
+                    ]
+                ),
+                device=self.device,
+            )
+
+            self.waypoint_pos1 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.483, 0.4],
+                    q=[-0.0, 1.000, 0, 0.0]
+                )
+            )
             self.waypoint_pos2 = self._transform_point(
                 self.origin_base,
                 self.new_base,
                 sapien.Pose(
-                    p=[-0.2, 0.35, 0.12],
+                    p=[-0.2, 0.32, 0.03],
                     q=[0.635, 0.772, 0.016, 0.015]
                 )
             )
-        self.waypoint_pos3 = self._transform_point(
-            self.origin_base,
-            self.new_base,
-            sapien.Pose(
-                p=[-0.2, 0.23, 0.4],
-                q=[0.3, 0.953, 0.012, 0.013]
+            if model_id == "100189":
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.32, 0.17],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            elif model_id == "102379":
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.25, 0.15],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            self.waypoint_pos3 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.23, 0.34],
+                    q=[0.3, 0.953, 0.012, 0.013]
+                )
             )
-        )
-        self.waypoint_pos4 = self._transform_point(
-            self.origin_base,
-            self.new_base,
-            sapien.Pose(
-                p=[-0.2, 0.019, 0.4],
-                q=[-0.086, 0.996, 0.004, 0.026]
+            self.waypoint_pos4 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.019, 0.34],
+                    q=[-0.086, 0.996, 0.004, 0.026]
+                )
             )
-        )
-        self.waypoint_pos5 = self._transform_point(
-            self.origin_base,
-            self.new_base,
-            sapien.Pose(
-                p=[-0.2, -0.16, 0.23],
-                q=[-0.503, 0.864, -0.008, 0.018]
+            self.waypoint_pos5 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.16, 0.23],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
             )
-        )
-        self.waypoint_pos6 = self._transform_point(
-            self.origin_base,
-            self.new_base,
-            sapien.Pose(
-                p=[-0.2, -0.331, 0.347],
-                q=[-0.503, 0.864, -0.008, 0.018]
+            self.waypoint_pos6 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.331, 0.347],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
             )
-        )
+
+    def _load_high_box(self, joint_types: List[str], model_ids, link_ids):
+        # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
+        # GPU/CPU simulation backends. This is useful for replaying demonstrations.
+
+        self._suitcases = []
+        self.lid_links: List[List[Link]] = []
+        self.lid_links_meshes: List[List[trimesh.Trimesh]] = []
+        for i, model_id in enumerate(model_ids):
+            # partnet-mobility is a dataset source and the ids are the ones we sampled
+            # we provide tools to easily create the articulation builder like so by querying
+            # the dataset source and unique ID
+            suitcase_builder = articulations.get_articulation_builder(
+                self.scene, f"partnet-mobility:{model_id}", mode=self.mode
+            )
+            suitcase_builder.set_scene_idxs(scene_idxs=[i])
+            self.origin_base = sapien.Pose(
+                p=[-0.1,
+                   -0.,
+                   self.suitcase_half_size/2],
+                q=euler2quat(0,
+                             0,
+                             np.pi / 2)
+            )
+            # random new base pose
+            self.new_base = sapien.Pose(
+                p=[-0.1 + np.random.uniform(-1, 1) * 0.02,
+                   -0. + np.random.uniform(-1, 1) * 0.02,
+                   self.suitcase_half_size/2 + np.random.uniform(-1, 1) * 0.02],
+                q=euler2quat(0,
+                             0 + np.random.uniform(-1, 1) * 1/16 * np.pi,
+                             np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi)
+            )
+            # self.new_base = self.origin_base
+            suitcase_builder.initial_pose = self.new_base
+            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
+            self.remove_from_state_dict_registry(suitcase)
+            # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
+            # that bit is also used to disable collision with the ground plane
+            for link in suitcase.links:
+                link.set_collision_group_bit(
+                    group=2, bit_idx=SUITCASE_COLLISION_BIT, bit=1
+                )
+            self._suitcases.append(suitcase)
+            self.lid_links.append([])
+            self.lid_links_meshes.append([])
+
+            # selecting semantic parts of articulations
+            for link, joint in zip(suitcase.links, suitcase.joints):
+                if joint.type[0] in joint_types:
+                    self.lid_links[-1].append(link)
+                    # save the first mesh in the link object that correspond with a lid
+                    self.lid_links_meshes[-1].append(
+                        link.generate_mesh(
+                            filter=lambda _, render_shape: "lid" in render_shape.name,
+                            mesh_name="lid",
+                        )[0]
+                    )
+
+            # we can merge different articulations/links with different degrees of freedoms into a single view/object
+            # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
+            # and with high performance. Note that some properties such as qpos and qlimits are now padded.
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.add_to_state_dict_registry(self.suitcase)
+
+            qpos_max = []
+            for i in range(len(self.lid_links[0])):
+                target_qlimits = self.lid_links[0][i].joint.limits  # [b, 1, 2]
+                qmin, qmax = target_qlimits[..., 0], target_qlimits[..., 1]
+                qpos_max.append(qmax/2)
+
+            # self.lid_links[0][0].joint.set_qpos(qpos_max)
+
+            self.lid_link = Link.merge(
+                [links[link_ids[i] % len(links)] for i, links in enumerate(self.lid_links)],
+                name="lid_link",
+            )
+
+            if model_id == "103762":
+                self.lid_link = self.lid_links[0][0]
+            # store the position of the lid mesh itself relative to the link it is apart of
+            self.lid_link_pos = common.to_tensor(
+                np.array(
+                    [
+                        meshes[link_ids[i] % len(meshes)].bounding_box.center_mass
+                        if meshes[link_ids[i] % len(meshes)] is not None else np.array([0., 0., 0.])
+                        for i, meshes in enumerate(self.lid_links_meshes)
+                    ]
+                ),
+                device=self.device,
+            )
+
+            self.waypoint_pos1 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.483, 0.4],
+                    q=[-0.0, 1.000, 0, 0.0]
+                )
+            )
+            if model_id in ["100214", "100243"]:
+                self.waypoint_pos1 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.183, 0.4],
+                        q=[-0.0, 1.000, 0, 0.0]
+                    )
+                )
+            self.waypoint_pos2 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.22, 0.2],
+                    q=[0.635, 0.772, 0.016, 0.015]
+                )
+            )
+            if model_id in ["48492", "100174"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.34, 0.16],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            elif model_id in ["100221"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.28, 0.07],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            elif model_id in ["100214", "100243"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.14, 0.26],
+                        q=[0.3, 0.953, 0.012, 0.013]
+                    )
+                )
+            elif model_id in ["100664"]:
+                self.waypoint_pos2 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.18, 0.18],
+                        q=[0.635, 0.772, 0.016, 0.015]
+                    )
+                )
+            self.waypoint_pos3 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.23, 0.3],
+                    q=[0.3, 0.953, 0.012, 0.013]
+                )
+            )
+            if model_id in ["100214", "100243", "100664"]:
+                self.waypoint_pos3 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.14, 0.26],
+                        q=[0.3, 0.953, 0.012, 0.013]
+                    )
+                )
+            self.waypoint_pos4 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, 0.019, 0.3],
+                    q=[-0.086, 0.996, 0.004, 0.026]
+                )
+            )
+            if model_id in ["100214", "100243"]:
+                self.waypoint_pos4 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, 0.019, 0.26],
+                        q=[-0.086, 0.996, 0.004, 0.026]
+                    )
+                )
+            self.waypoint_pos5 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.16, 0.23],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
+            )
+            if model_id in ["47645", "100214", "100243", "100664", "102456"]:
+                self.waypoint_pos5 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, -0.1, 0.2],
+                        q=[-0.503, 0.864, -0.008, 0.018]
+                    )
+                )
+            elif model_id in ["100174"]:
+                self.waypoint_pos5 = self._transform_point(
+                    self.origin_base,
+                    self.new_base,
+                    sapien.Pose(
+                        p=[-0.2, -0.05, 0.2],
+                        q=[-0.503, 0.864, -0.008, 0.018]
+                    )
+                )
+            self.waypoint_pos6 = self._transform_point(
+                self.origin_base,
+                self.new_base,
+                sapien.Pose(
+                    p=[-0.2, -0.331, 0.347],
+                    q=[-0.503, 0.864, -0.008, 0.018]
+                )
+            )
 
     def _after_reconfigure(self, options):
         # To spawn suitcases in the right place, we need to change their z position such that
@@ -445,3 +1139,132 @@ class FoldSuitcaseEnv(BaseEnv):
         # this should be equal to compute_dense_reward / max possible reward
         max_reward = 5.0
         return self.compute_dense_reward(obs=obs, action=action, info=info) / max_reward
+
+    """
+    Sensor Data
+    """
+    def get_obs(self, info: Optional[Dict] = None):
+        """
+        Return the current observation of the environment. User may call this directly to get the current observation
+        as opposed to taking a step with actions in the environment.
+
+        Note that some tasks use info of the current environment state to populate the observations to avoid having to
+        compute slow operations twice. For example a state based observation may wish to include a boolean indicating
+        if a robot is grasping an object. Computing this boolean correctly is slow, so it is preferable to generate that
+        data in the info object by overriding the `self.evaluate` function.
+
+        Args:
+            info (Dict): The info object of the environment. Generally should always be the result of `self.get_info()`.
+                If this is None (the default), this function will call `self.get_info()` itself
+        """
+        if info is None:
+            info = self.get_info()
+        if self._obs_mode == "none":
+            # Some cases do not need observations, e.g., MPC
+            return dict()
+        elif self._obs_mode == "state":
+            state_dict = self._get_obs_state_dict(info)
+            obs = common.flatten_state_dict(state_dict, use_torch=True, device=self.device)
+        elif self._obs_mode == "state_dict":
+            obs = self._get_obs_state_dict(info)
+        elif self._obs_mode == "pointcloud":
+            # TODO support more flexible pcd obs mode with new render system
+            obs = self._get_obs_with_sensor_data(info)
+            obs = sensor_data_to_pointcloud(obs, self._sensors)
+        elif self._obs_mode == "sensor_data":
+            # return raw texture data dependent on choice of shader
+            obs = self._get_obs_with_sensor_data(info, apply_texture_transforms=False)
+        else:
+            obs = self._get_obs_with_sensor_data(info)
+        if 'hand_camera' in obs['sensor_data'] and self.model is not None:
+            import cv2
+            import torch.nn as nn
+            import matplotlib.pyplot as plt
+            # 注册钩子函数以提取卷积层输出
+            def register_hooks(model):
+                activations = []
+
+                def hook_fn(module, input, output):
+                    activations.append(output)
+
+                # 注册到每个卷积层
+                hooks = []
+                for layer in model.cnn:
+                    if isinstance(layer, nn.Conv2d):
+                        hooks.append(layer.register_forward_hook(hook_fn))
+
+                return hooks, activations
+
+            def visualize_feature_map(activations, origin_image, layer_idx=0):
+                feature_map = activations[layer_idx].detach().cpu().numpy()  # 取某一层的输出特征图
+                feature_map = np.squeeze(feature_map, axis=0)  # 去掉batch维度
+                feature_map = feature_map[0, :, :]  # 选择第一个特征图
+                feature_map = np.maximum(feature_map, 0)  # 防止负值
+                feature_map = feature_map / np.max(feature_map)  # 归一化到[0, 1]
+                heatmap = cv2.applyColorMap(np.uint8(255 * feature_map), cv2.COLORMAP_JET)
+                origin_image = cv2.cvtColor(origin_image, cv2.COLOR_RGB2BGR)
+                if origin_image.shape[0] != heatmap.shape[0] or origin_image.shape[1] != heatmap.shape[1]:
+                    heatmap = cv2.resize(heatmap, (origin_image.shape[1], origin_image.shape[0]))
+                origin_image = np.uint8(origin_image * 255.0)
+                overlay = cv2.addWeighted(origin_image, 0.7, heatmap, 0.5, 0)
+                # overlay = origin_image
+                # plt.figure(figsize=(10, 10))
+                # plt.imshow(overlay)
+                # plt.axis('off')
+                # plt.title('Overlay Heatmap on Image')
+                # plt.savefig('image.png', bbox_inches='tight', pad_inches=0)
+                return overlay
+
+            def get_row_col(num_pic):
+                squr = num_pic ** 0.5
+                row = round(squr)
+                col = row + 1 if squr - row > 0 else row
+                return row, col
+
+            model = self.model.visual_encoder
+            image = obs['sensor_data']['hand_camera']['rgb'].permute(0, 3, 1, 2).float().cuda() / 255.0
+            origin_image = np.transpose(image[0].cpu().numpy(), (1, 2, 0)).copy()
+            hooks, activations = register_hooks(model)
+            model(image)
+            overlay = visualize_feature_map(activations, origin_image, layer_idx=3)
+            for hook in hooks:
+                hook.remove()
+            self.observations.append(overlay)
+        return obs
+
+    def _get_obs_sensor_data(self, apply_texture_transforms: bool = True) -> dict:
+        """get only data from sensors. Auto hides any objects that are designated to be hidden"""
+        for obj in self._hidden_objects:
+            obj.hide_visual()
+        self.scene.update_render()
+        self.capture_sensor_data()
+        sensor_obs = dict()
+        for name, sensor in self.scene.sensors.items():
+            if isinstance(sensor, Camera):
+                if self.obs_mode in ["state", "state_dict"]:
+                    # normally in non visual observation modes we do not render sensor observations. But some users may want to render sensor data for debugging or various algorithms
+                    sensor_obs[name] = sensor.get_obs(position=False, segmentation=False, apply_texture_transforms=apply_texture_transforms)
+                else:
+                    sensor_obs[name] = sensor.get_obs(
+                        rgb=self._visual_obs_mode_struct.rgb,
+                        depth=self._visual_obs_mode_struct.depth,
+                        position=self._visual_obs_mode_struct.position,
+                        segmentation=self._visual_obs_mode_struct.segmentation,
+                        normal=self._visual_obs_mode_struct.normal,
+                        albedo=self._visual_obs_mode_struct.albedo,
+                        apply_texture_transforms=apply_texture_transforms,
+                        fisheye=sensor.camera.name=='hand_camera',
+                    )
+        # explicitly synchronize and wait for cuda kernels to finish
+        # this prevents the GPU from making poor scheduling decisions when other physx code begins to run
+        torch.cuda.synchronize()
+        return sensor_obs
+
+    def _get_obs_with_sensor_data(self, info: Dict, apply_texture_transforms: bool = True) -> dict:
+        """Get the observation with sensor data"""
+        return dict(
+            agent=self._get_obs_agent(),
+            extra=self._get_obs_extra(info),
+            sensor_param=self.get_sensor_params(),
+            sensor_data=self._get_obs_sensor_data(apply_texture_transforms),
+        )
