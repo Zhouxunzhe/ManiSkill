@@ -95,14 +95,6 @@ class FoldSuitcaseEnv(BaseEnv):
     # Specify some supported robot types
     agent: Union[Panda, Fetch]
     lid_types = ["revolute_unwrapped", "prismatic"]
-    if mode == "train":
-        JSON = (
-            PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_train.json"
-        )
-    elif mode == "eval":
-        JSON = (
-                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_eval.json"
-        )
 
     # set some commonly used values
     max_close_frac = 0.25
@@ -110,6 +102,16 @@ class FoldSuitcaseEnv(BaseEnv):
 
     def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, model=None, **kwargs):
         # specifying robot_uids="panda" as the default means gym.make("PushCube-v1") will default to using the panda arm.
+        if "mode" in kwargs.keys():
+            self.mode = kwargs["mode"]
+        if self.mode == "train":
+            self.JSON = (
+                    PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_train.json"
+            )
+        elif self.mode == "eval":
+            self.JSON = (
+                    PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_eval.json"
+            )
         self.robot_init_qpos_noise = robot_init_qpos_noise
         train_data = load_json(self.JSON)
         self.model = model

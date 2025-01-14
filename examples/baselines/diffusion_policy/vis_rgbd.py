@@ -273,6 +273,7 @@ if __name__ == "__main__":
         sensor_configs=dict(shader_pack=args.shader),
         human_render_camera_configs=dict(shader_pack=args.shader),
         viewer_camera_configs=dict(shader_pack=args.shader),
+        mode="eval"
     )
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -309,8 +310,6 @@ if __name__ == "__main__":
 
     # Evaluation
     print("==================== Eval Begin ====================")
-    envs.envs[0].base_env.mode = "eval"
-
     last_tick = time.time()
 
     ema.copy_to(ema_agent.parameters())

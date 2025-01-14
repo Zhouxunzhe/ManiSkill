@@ -345,6 +345,7 @@ class Agent(nn.Module):
             noisy_action_seq, timesteps, global_cond=obs_cond
         )
 
+        # MSE Loss for U-Net
         return F.mse_loss(noise_pred, noise)
 
     def get_action(self, obs_seq):
@@ -445,6 +446,7 @@ if __name__ == "__main__":
         sensor_configs=dict(shader_pack=args.shader),
         human_render_camera_configs=dict(shader_pack=args.shader),
         viewer_camera_configs=dict(shader_pack=args.shader),
+        mode="eval"
     )
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -585,8 +587,6 @@ if __name__ == "__main__":
         # Evaluation
         if iteration % args.eval_freq == 0 and iteration != 0:
             print("==================== Eval Begin ====================")
-            envs.envs[0].base_env.mode = "eval"
-
             last_tick = time.time()
 
             ema.copy_to(ema_agent.parameters())
