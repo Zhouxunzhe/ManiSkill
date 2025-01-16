@@ -205,6 +205,9 @@ class BaseEnv(gym.Env):
         parallel_in_single_scene: bool = False,
 
         enhanced_determinism: bool = False,
+
+        mode: Optional[str] = None,
+        # """the environment mode for train / evaluation, deciding the datasets"""
     ):
         self._enhanced_determinism = enhanced_determinism
 

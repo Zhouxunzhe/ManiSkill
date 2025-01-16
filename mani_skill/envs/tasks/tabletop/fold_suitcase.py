@@ -16,14 +16,17 @@ See comments for how to make your own environment and what each required functio
 """
 
 from typing import Any, Dict, List, Optional, Union
-
+import time
 import numpy as np
 import sapien
 import trimesh
 import torch
 import torch.random
+from PIL.ImageChops import overlay
+from numpy.distutils.misc_util import njoin
 from transforms3d.euler import euler2quat
 
+from diffusion_policy.encoders.clip import CLIPEncoder
 from mani_skill import PACKAGE_ASSET_DIR
 from mani_skill.agents.robots import Fetch, Panda
 from mani_skill.envs.sapien_env import BaseEnv
@@ -41,6 +44,12 @@ from mani_skill.envs.utils.observations import (
 )
 from mani_skill.sensors.camera import (
     Camera,
+)
+from examples.baselines.diffusion_policy import (
+    PlainConv,
+    CLIPEncoder,
+    DINOv2Encoder,
+    ResNetEncoder,
 )
 
 SUITCASE_COLLISION_BIT = 29
@@ -88,8 +97,6 @@ class FoldSuitcaseEnv(BaseEnv):
     laptop_180 = [
         "9748", "9968", "9992", "9996", "10040", "10101", "10238", "10305", "10356", "10707",
         "11141", "11242"]  # Eval: "10101"
-    # TODO(zxz)
-    mode = "train"  # "train" / "eval"
     observations = []
 
     # Specify some supported robot types
@@ -103,7 +110,9 @@ class FoldSuitcaseEnv(BaseEnv):
     def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, model=None, **kwargs):
         # specifying robot_uids="panda" as the default means gym.make("PushCube-v1") will default to using the panda arm.
         if "mode" in kwargs.keys():
-            self.mode = kwargs["mode"]
+            self.mode = kwargs["mode"]  # "train" / "eval"
+        else:
+            self.mode = "train"
         if self.mode == "train":
             self.JSON = (
                     PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_train.json"
@@ -245,7 +254,7 @@ class FoldSuitcaseEnv(BaseEnv):
                 p=[-0.2 + np.random.uniform(-1, 1) * 0.02, -0.1 + np.random.uniform(-1, 1) * 0.02, self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
                 q=euler2quat(np.pi / 2, np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi, 0.0 + np.random.uniform(-1, 1) * 1/16 * np.pi)
             )
-            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
+            suitcase = suitcase_builder.build(name=f"suitcase_{model_id}_{i}_{int(time.time())}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -272,7 +281,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.suitcase = Articulation.merge(self._suitcases, name=f"suitcase_{model_id}_{int(time.time())}")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -402,7 +411,7 @@ class FoldSuitcaseEnv(BaseEnv):
                              0 + np.random.uniform(-1, 1) * 1/16 * np.pi,
                              np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi)
             )
-            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
+            suitcase = suitcase_builder.build(name=f"laptop_{model_id}_{i}_{int(time.time())}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -429,7 +438,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.suitcase = Articulation.merge(self._suitcases, name=f"laptop_{model_id}_{int(time.time())}")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -681,7 +690,7 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             # self.new_base = self.origin_base
             suitcase_builder.initial_pose = self.new_base
-            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
+            suitcase = suitcase_builder.build(name=f"box_{model_id}_{i}_{int(time.time())}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -708,7 +717,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.suitcase = Articulation.merge(self._suitcases, name=f"box_{model_id}_{int(time.time())}")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -839,7 +848,7 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             # self.new_base = self.origin_base
             suitcase_builder.initial_pose = self.new_base
-            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
+            suitcase = suitcase_builder.build(name=f"high_box_{model_id}_{i}_{int(time.time())}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -866,7 +875,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
+            self.suitcase = Articulation.merge(self._suitcases, name=f"high_box_{model_id}_{int(time.time())}")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -1114,8 +1123,9 @@ class FoldSuitcaseEnv(BaseEnv):
         if "state" in self.obs_mode:
             obs.update(
                 tcp_to_lid_pos=info["lid_link_pos"] - self.agent.tcp.pose.p,
-                target_link_qpos=self.lid_link.joint.qpos,
-                target_lid_pos=info["lid_link_pos"],
+                # TODO(zxz): modify for PPO
+                # target_link_qpos=self.lid_link.joint.qpos,
+                # target_lid_pos=info["lid_link_pos"],
             )
         return obs
 
@@ -1123,18 +1133,16 @@ class FoldSuitcaseEnv(BaseEnv):
         tcp_to_lid_dist = torch.linalg.norm(
             self.agent.tcp.pose.p - info["lid_link_pos"], axis=1
         )
-        reaching_reward = 1 - torch.tanh(5 * tcp_to_lid_dist)
+        # reaching_reward = 1 - torch.tanh(5 * tcp_to_lid_dist)
         amount_to_close_left = torch.div(
             self.target_qpos - self.lid_link.joint.qpos, self.target_qpos
         )
         close_reward = 2 * (1 - amount_to_close_left)
-        reaching_reward[
-            amount_to_close_left < 0.999
-            ] = 2  # if joint closes even a tiny bit, we don't need reach reward anymore
+        reaching_reward = amount_to_close_left
         # print(close_reward.shape)
-        close_reward[info["close_enough"]] = 3  # give max reward here
+        # close_reward[info["close_enough"]] = 3  # give max reward here
         reward = reaching_reward + close_reward
-        reward[info["success"]] = 5.0
+        # reward[info["success"]] = 5.0
         return reward
 
     def compute_normalized_dense_reward(self, obs: Any, action: Array, info: Dict):
@@ -1178,60 +1186,106 @@ class FoldSuitcaseEnv(BaseEnv):
             obs = self._get_obs_with_sensor_data(info, apply_texture_transforms=False)
         else:
             obs = self._get_obs_with_sensor_data(info)
-        if 'hand_camera' in obs['sensor_data'] and self.model is not None:
-            import cv2
-            import torch.nn as nn
-            import matplotlib.pyplot as plt
-            # 注册钩子函数以提取卷积层输出
-            def register_hooks(model):
-                activations = []
+            if 'hand_camera' in obs['sensor_data'] and self.model is not None:
+                import numpy as np
+                import cv2
+                import torch
+                import clip
+                from torch import nn
+                def cnn_register_hooks(model):
+                    activations = []
+                    def hook_fn(module, input, output):
+                        activations.append(output)
+                    hooks = []
+                    for layer in model.cnn:
+                        if isinstance(layer, nn.Conv2d):
+                            hooks.append(layer.register_forward_hook(hook_fn))
+                    return hooks, activations
 
-                def hook_fn(module, input, output):
-                    activations.append(output)
+                def cv2_visualization(model, activations, image, layer_idx=0):
+                    image = image.cuda() / 255.0
+                    origin_image = np.transpose(image[0].cpu().numpy(), (1, 2, 0)).copy()
+                    model(image)
+                    feature_map = activations[layer_idx].detach().cpu().numpy()
+                    feature_map = np.squeeze(feature_map, axis=0)
+                    feature_map = feature_map[0, :, :]
+                    feature_map = np.maximum(feature_map, 0)
+                    feature_map = feature_map / np.max(feature_map)
+                    heatmap = cv2.applyColorMap(np.uint8(255 * feature_map), cv2.COLORMAP_JET)
+                    origin_image = cv2.cvtColor(origin_image, cv2.COLOR_RGB2BGR)
+                    if origin_image.shape[0] != heatmap.shape[0] or origin_image.shape[1] != heatmap.shape[1]:
+                        heatmap = cv2.resize(heatmap, (origin_image.shape[1], origin_image.shape[0]))
+                    origin_image = np.uint8(origin_image * 255.0)
+                    overlay = cv2.addWeighted(origin_image, 0.7, heatmap, 0.5, 0)
+                    # overlay = origin_image
+                    return overlay
 
-                # 注册到每个卷积层
-                hooks = []
-                for layer in model.cnn:
-                    if isinstance(layer, nn.Conv2d):
-                        hooks.append(layer.register_forward_hook(hook_fn))
 
-                return hooks, activations
+                # =====================================================================
 
-            def visualize_feature_map(activations, origin_image, layer_idx=0):
-                feature_map = activations[layer_idx].detach().cpu().numpy()  # 取某一层的输出特征图
-                feature_map = np.squeeze(feature_map, axis=0)  # 去掉batch维度
-                feature_map = feature_map[0, :, :]  # 选择第一个特征图
-                feature_map = np.maximum(feature_map, 0)  # 防止负值
-                feature_map = feature_map / np.max(feature_map)  # 归一化到[0, 1]
-                heatmap = cv2.applyColorMap(np.uint8(255 * feature_map), cv2.COLORMAP_JET)
-                origin_image = cv2.cvtColor(origin_image, cv2.COLOR_RGB2BGR)
-                if origin_image.shape[0] != heatmap.shape[0] or origin_image.shape[1] != heatmap.shape[1]:
-                    heatmap = cv2.resize(heatmap, (origin_image.shape[1], origin_image.shape[0]))
-                origin_image = np.uint8(origin_image * 255.0)
-                overlay = cv2.addWeighted(origin_image, 0.7, heatmap, 0.5, 0)
-                # overlay = origin_image
+                from pytorch_grad_cam import (
+                    GradCAM,
+                )
+                from transformers import CLIPProcessor, CLIPModel
+
+                from pytorch_grad_cam.utils.image import show_cam_on_image, preprocess_image
+                from pytorch_grad_cam.ablation_layer import AblationLayerVit
+
+                def reshape_transform(tensor, height=7, width=7):
+                    result = tensor[:, 1:, :].reshape(tensor.size(0), height, width, tensor.size(2))
+                    result = result.transpose(2, 3).transpose(1, 2)
+                    return result
+
+                class ImageClassifier(nn.Module):
+                    def __init__(self, labels):
+                        super(ImageClassifier, self).__init__()
+                        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+                        self.preprocess = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+                        self.labels = labels
+
+                    def forward(self, x):
+                        text_inputs = self.preprocess(text=labels, return_tensors="pt", padding=True)
+                        outputs = self.clip_model(pixel_values=x, input_ids=text_inputs['input_ids'],
+                                            attention_mask=text_inputs['attention_mask'])
+                        logits_per_image = outputs.logits_per_image
+                        probs = logits_per_image.softmax(dim=1)
+                        # for label, prob in zip(self.labels, probs[0]):
+                        #     print(f"{label}: {prob:.4f}")
+                        return probs
+
+                model = self.model.visual_encoder
+                image = obs['sensor_data']['hand_camera']['rgb'].permute(0, 3, 1, 2).float()
+
+                with torch.enable_grad():
+                    if isinstance(model, PlainConv):
+                        hooks, activations = cnn_register_hooks(model)
+                        overlay = cv2_visualization(model, activations, image, layer_idx=3)
+                        for hook in hooks:
+                            hook.remove()
+                    elif isinstance(model, CLIPEncoder):
+                        labels = ["a suitcase", "a laptop", "a box"]
+                        model = ImageClassifier(labels)
+                        model.eval()
+                        target_layers = [model.clip_model.vision_model.encoder.layers[-1].layer_norm1]
+                        rgb_img = image[0].cpu().numpy().transpose(1, 2, 0)
+                        rgb_img = cv2.resize(rgb_img, (224, 224))
+                        rgb_img = np.float32(rgb_img) / 255
+                        input_tensor = preprocess_image(rgb_img, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+                        cam = GradCAM(model=model, target_layers=target_layers, reshape_transform=reshape_transform)
+                        targets = None
+                        cam.batch_size = 32
+                        grayscale_cam = cam(input_tensor=input_tensor, targets=targets,
+                                            eigen_smooth=True, aug_smooth=True)
+                        grayscale_cam = grayscale_cam[0, :]
+                        overlay = show_cam_on_image(rgb_img, grayscale_cam)
+                        # cv2.imwrite(f'grad_cam.jpg', overlay)
+
                 # plt.figure(figsize=(10, 10))
                 # plt.imshow(overlay)
                 # plt.axis('off')
                 # plt.title('Overlay Heatmap on Image')
                 # plt.savefig('image.png', bbox_inches='tight', pad_inches=0)
-                return overlay
-
-            def get_row_col(num_pic):
-                squr = num_pic ** 0.5
-                row = round(squr)
-                col = row + 1 if squr - row > 0 else row
-                return row, col
-
-            model = self.model.visual_encoder
-            image = obs['sensor_data']['hand_camera']['rgb'].permute(0, 3, 1, 2).float().cuda() / 255.0
-            origin_image = np.transpose(image[0].cpu().numpy(), (1, 2, 0)).copy()
-            hooks, activations = register_hooks(model)
-            model(image)
-            overlay = visualize_feature_map(activations, origin_image, layer_idx=3)
-            for hook in hooks:
-                hook.remove()
-            self.observations.append(overlay)
+                self.observations.append(overlay)
         return obs
 
     def _get_obs_sensor_data(self, apply_texture_transforms: bool = True) -> dict:

@@ -16,14 +16,14 @@ import numpy as np
 import optax
 from omegaconf import OmegaConf
 
-from rfcl.agents.sac import SAC, ActorCritic, SACConfig
-from rfcl.agents.sac.networks import DiagGaussianActor
-from rfcl.data.dataset import ReplayDataset
-from rfcl.envs.make_env import EnvConfig, make_env_from_cfg
-from rfcl.logger import LoggerConfig
-from rfcl.models import NetworkConfig, build_network_from_cfg
-from rfcl.utils.parse import parse_cfg
-from rfcl.utils.spaces import get_action_dim
+from examples.baselines.rfcl.rfcl.rfcl.agents.sac import SAC, ActorCritic, SACConfig
+from examples.baselines.rfcl.rfcl.rfcl.agents.sac.networks import DiagGaussianActor
+from examples.baselines.rfcl.rfcl.rfcl.data.dataset import ReplayDataset
+from examples.baselines.rfcl.rfcl.rfcl.envs.make_env import EnvConfig, make_env_from_cfg
+from examples.baselines.rfcl.rfcl.rfcl.logger import LoggerConfig
+from examples.baselines.rfcl.rfcl.rfcl.models import NetworkConfig, build_network_from_cfg
+from examples.baselines.rfcl.rfcl.rfcl.utils.parse import parse_cfg
+from examples.baselines.rfcl.rfcl.rfcl.utils.spaces import get_action_dim
 
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -189,6 +189,8 @@ def main(cfg: SACExperiment):
             }
         fixed_wb_cfgs = {"env_cfg": parse_env_cfg(env_cfg), "eval_env_cfg": parse_env_cfg(eval_env_cfg), "num_demos": cfg.train.num_demos, "demo_type": cfg.demo_type}
         wb.config.update({**fixed_wb_cfgs}, allow_val_change=True)
+        if cfg.config_type is None:
+            cfg.config_type = "default_config"
         algo.logger.wandb_run.tags = ["rlpd", cfg.config_type]
     algo.offline_buffer = demo_replay_dataset  # create offline buffer to oversample from
     rng_key, train_rng_key = jax.random.split(jax.random.PRNGKey(cfg.seed), 2)

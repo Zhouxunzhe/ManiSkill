@@ -99,6 +99,8 @@ class Args:
     shader: str = "default"
     """Change shader used for rendering. Default is 'default' which is very fast. Can also be 'rt' for ray tracing and generating photo-realistic renders. 
     Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
+    visual_encoder: str = "plain_conv"
+    """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
 
@@ -123,9 +125,26 @@ class Agent(nn.Module):
 
         visual_feature_dim = 256
         in_c = int(C / 3 * 4) if args.depth else C
-        self.visual_encoder = PlainConv(
-            in_channels=in_c, out_dim=visual_feature_dim, pool_feature_map=True
-        )
+        if args.visual_encoder == 'plain_conv':
+            from diffusion_policy.encoders.plain_conv import PlainConv
+            self.visual_encoder = PlainConv(
+                in_channels=in_c, out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'clip':
+            from diffusion_policy.encoders.clip import CLIPEncoder
+            self.visual_encoder = CLIPEncoder(
+                out_dim=visual_feature_dim
+            )
+        elif args.visual_encoder == 'dinov2':
+            from diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            self.visual_encoder = DINOv2Encoder(
+                out_dim=visual_feature_dim
+            )
+        elif args.visual_encoder == 'resnet':
+            from diffusion_policy.encoders.resnet import ResNetEncoder
+            self.visual_encoder = ResNetEncoder(
+                out_dim=visual_feature_dim, pool_feature_map=True
+            )
         self.noise_pred_net = ConditionalUnet1D(
             input_dim=self.act_dim,  # act_horizon is not used (U-Net doesn't care)
             global_cond_dim=self.obs_horizon * (visual_feature_dim + obs_state_dim),
@@ -185,6 +204,7 @@ class Agent(nn.Module):
             noisy_action_seq, timesteps, global_cond=obs_cond
         )
 
+        # MSE Loss for U-Net
         return F.mse_loss(noise_pred, noise)
 
     def get_action(self, obs_seq):
@@ -293,9 +313,6 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s"
         % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
-    tmp_env = gym.make(args.env_id, obs_mode="rgb")
-    orignal_obs_space = tmp_env.observation_space
-    tmp_env.close()
 
     agent = Agent(envs, args).to(device)
     ema_agent = Agent(envs, args).to(device)

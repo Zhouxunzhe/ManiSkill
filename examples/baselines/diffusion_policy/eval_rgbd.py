@@ -293,9 +293,6 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s"
         % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
-    tmp_env = gym.make(args.env_id, obs_mode="rgb")
-    orignal_obs_space = tmp_env.observation_space
-    tmp_env.close()
 
     agent = Agent(envs, args).to(device)
     ema_agent = Agent(envs, args).to(device)

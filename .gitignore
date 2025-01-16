@@ -45,3 +45,5 @@ imgui.ini
 .coverage*
 htmlcov/
 /runs/
+/exps/
+/wandb/

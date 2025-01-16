@@ -503,7 +503,7 @@ if __name__ == "__main__":
         ),  # (B, H, W, C) -> (B, C, H, W)
         state_obs_extractor=build_state_obs_extractor(args.env_id),
     )
-    tmp_env = gym.make(args.env_id, obs_mode="rgb")
+    tmp_env = gym.make(args.env_id, obs_mode="rgb", mode="eval")
     orignal_obs_space = tmp_env.observation_space
     tmp_env.close()
     dataset = SmallDemoDataset_DiffusionPolicy(
