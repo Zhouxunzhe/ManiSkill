@@ -26,7 +26,6 @@ from PIL.ImageChops import overlay
 from numpy.distutils.misc_util import njoin
 from transforms3d.euler import euler2quat
 
-from diffusion_policy.encoders.clip import CLIPEncoder
 from mani_skill import PACKAGE_ASSET_DIR
 from mani_skill.agents.robots import Fetch, Panda
 from mani_skill.envs.sapien_env import BaseEnv
