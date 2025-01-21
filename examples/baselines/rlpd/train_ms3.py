@@ -69,7 +69,7 @@ from dacite import from_dict
 
 
 def main(cfg: SACExperiment):
-    np.random.seed(cfg.seed)
+    # np.random.seed(cfg.seed)
 
     ### Setup the experiment parameters ###
 
@@ -100,8 +100,8 @@ def main(cfg: SACExperiment):
     cfg.sac.num_eval_envs = cfg.eval_env.num_envs
 
     ### Create Environments ###
-    if cfg.demo_seed is not None:
-        np.random.seed(cfg.demo_seed)
+    # if cfg.demo_seed is not None:
+    #     np.random.seed(cfg.demo_seed)
 
     if "reward_mode" in cfg.env.env_kwargs:
         reward_mode = cfg.env.env_kwargs["reward_mode"]
@@ -121,14 +121,14 @@ def main(cfg: SACExperiment):
     if demo_replay_dataset.action_scale is not None:
         env_cfg.action_scale = demo_replay_dataset.action_scale.tolist()
         eval_env_cfg.action_scale = env_cfg.action_scale
-    np.random.seed(cfg.seed)
+    # np.random.seed(cfg.seed)
 
-    env, env_meta = make_env_from_cfg(env_cfg, seed=cfg.seed)
+    env, env_meta = make_env_from_cfg(env_cfg)
     eval_env = None
     if cfg.sac.num_eval_envs > 0:
         eval_env, _ = make_env_from_cfg(
             eval_env_cfg,
-            seed=cfg.seed + 1_000_000,
+            # seed=cfg.seed + 1_000_000,
             video_path=video_path if cfg.save_eval_video else None,
         )
 

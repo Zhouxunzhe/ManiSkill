@@ -142,7 +142,7 @@ class FoldSuitcaseEnv(BaseEnv):
         pose = sapien_utils.look_at(eye=[0.3, 0, 0.6], target=[-0.1, 0, 0.1])
         return [
             CameraConfig(
-                "hand_camera",   # "hand_camera"
+                "hand_camera",
                 pose=pose,
                 width=128,
                 height=128,
@@ -174,6 +174,7 @@ class FoldSuitcaseEnv(BaseEnv):
         # load suitcase
         model_ids = self._batched_episode_rng.choice(self.all_model_ids)
         link_ids = self._batched_episode_rng.randint(0, 2 ** 31)
+        print("model_id:", model_ids)
         for i, model_id in enumerate(model_ids):
             if model_id in self.suitcase_list:
                 self._load_suitcase(self.lid_types, [model_id], [link_ids[i]])
@@ -1117,14 +1118,15 @@ class FoldSuitcaseEnv(BaseEnv):
     def _get_obs_extra(self, info: Dict):
         obs = dict(
             tcp_pose=self.agent.tcp.pose.raw_pose,
+            # tactile=self.agent.is_grasping(self.suitcase)
         )
 
         if "state" in self.obs_mode:
             obs.update(
                 tcp_to_lid_pos=info["lid_link_pos"] - self.agent.tcp.pose.p,
                 # TODO(zxz): modify for PPO
-                # target_link_qpos=self.lid_link.joint.qpos,
-                # target_lid_pos=info["lid_link_pos"],
+                target_link_qpos=self.lid_link.joint.qpos,
+                target_lid_pos=info["lid_link_pos"],
             )
         return obs
 
