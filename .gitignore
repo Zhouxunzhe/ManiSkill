@@ -3,6 +3,10 @@ __pycache__
 _ext
 *.pyc
 *.so
+*.mp4
+*.deb
+*.h5
+*.pt
 build/
 dist/
 *.egg-info/
