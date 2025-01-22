@@ -155,7 +155,8 @@ class FoldSuitcaseEnv(BaseEnv):
     @property
     def _default_human_render_camera_configs(self):
         # registers a more high-definition (512x512) camera used just for rendering when render_mode="rgb_array" or calling env.render_rgb_array()
-        pose = sapien_utils.look_at([0.6, 0.7, 0.6], [0.0, 0.2, 0.35])
+        # pose = sapien_utils.look_at([0.6, 0.7, 0.6], [0.0, 0.2, 0.35])
+        pose = sapien_utils.look_at([0.6, -0.5, 0.6], [0.0, -0.1, 0.35])
         return CameraConfig(
             "render_camera", pose=pose, width=512, height=512, fov=1, near=0.01, far=100
         )
@@ -174,7 +175,7 @@ class FoldSuitcaseEnv(BaseEnv):
         # load suitcase
         model_ids = self._batched_episode_rng.choice(self.all_model_ids)
         link_ids = self._batched_episode_rng.randint(0, 2 ** 31)
-        print("model_id:", model_ids)
+        # print("model_id:", model_ids)
         for i, model_id in enumerate(model_ids):
             if model_id in self.suitcase_list:
                 self._load_suitcase(self.lid_types, [model_id], [link_ids[i]])
@@ -254,7 +255,7 @@ class FoldSuitcaseEnv(BaseEnv):
                 p=[-0.2 + np.random.uniform(-1, 1) * 0.02, -0.1 + np.random.uniform(-1, 1) * 0.02, self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
                 q=euler2quat(np.pi / 2, np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi, 0.0 + np.random.uniform(-1, 1) * 1/16 * np.pi)
             )
-            suitcase = suitcase_builder.build(name=f"suitcase_{model_id}_{i}_{int(time.time())}")
+            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -281,7 +282,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name=f"suitcase_{model_id}_{int(time.time())}")
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -411,7 +412,7 @@ class FoldSuitcaseEnv(BaseEnv):
                              0 + np.random.uniform(-1, 1) * 1/16 * np.pi,
                              np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi)
             )
-            suitcase = suitcase_builder.build(name=f"laptop_{model_id}_{i}_{int(time.time())}")
+            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -438,7 +439,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name=f"laptop_{model_id}_{int(time.time())}")
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -690,7 +691,7 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             # self.new_base = self.origin_base
             suitcase_builder.initial_pose = self.new_base
-            suitcase = suitcase_builder.build(name=f"box_{model_id}_{i}_{int(time.time())}")
+            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -717,7 +718,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name=f"box_{model_id}_{int(time.time())}")
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -848,7 +849,7 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             # self.new_base = self.origin_base
             suitcase_builder.initial_pose = self.new_base
-            suitcase = suitcase_builder.build(name=f"high_box_{model_id}_{i}_{int(time.time())}")
+            suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
             # that bit is also used to disable collision with the ground plane
@@ -875,7 +876,7 @@ class FoldSuitcaseEnv(BaseEnv):
             # we can merge different articulations/links with different degrees of freedoms into a single view/object
             # allowing you to manage all of them under one object and retrieve data like qpos, pose, etc. all together
             # and with high performance. Note that some properties such as qpos and qlimits are now padded.
-            self.suitcase = Articulation.merge(self._suitcases, name=f"high_box_{model_id}_{int(time.time())}")
+            self.suitcase = Articulation.merge(self._suitcases, name="suitcase")
             self.add_to_state_dict_registry(self.suitcase)
 
             qpos_max = []
@@ -1118,7 +1119,7 @@ class FoldSuitcaseEnv(BaseEnv):
     def _get_obs_extra(self, info: Dict):
         obs = dict(
             tcp_pose=self.agent.tcp.pose.raw_pose,
-            # tactile=self.agent.is_grasping(self.suitcase)
+            # tactile=self.agent.tactile(self.lid_links[0][0])
         )
 
         if "state" in self.obs_mode:

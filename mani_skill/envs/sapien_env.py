@@ -334,11 +334,14 @@ class BaseEnv(gym.Env):
 
         # Use a fixed (main) seed to enhance determinism
         self._main_seed = None
-        self._set_main_rng([2022 + i for i in range(self.num_envs)])
+        # TODO(zxz): Randomize seed
+        # self._set_main_rng([2022 + i for i in range(self.num_envs)])
         self._elapsed_steps = (
             torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
         )
-        obs, _ = self.reset(seed=[2022 + i for i in range(self.num_envs)], options=dict(reconfigure=True))
+        # TODO(zxz): Randomize seed
+        # obs, _ = self.reset(seed=[2022 + i for i in range(self.num_envs)], options=dict(reconfigure=True))
+        obs, _ = self.reset(options=dict(reconfigure=True))
 
         self._init_raw_obs = common.to_cpu_tensor(obs)
         """the raw observation returned by the env.reset (a cpu torch tensor/dict of tensors). Useful for future observation wrappers to use to auto generate observation spaces"""
