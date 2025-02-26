@@ -7,7 +7,6 @@ import torch
 from gymnasium.vector import VectorEnv
 
 from mani_skill.utils.structs.types import Array
-from mani_skill.utils.common import torch_clone_dict
 
 if TYPE_CHECKING:
     from mani_skill.envs.sapien_env import BaseEnv
@@ -142,13 +141,12 @@ class ManiSkillVectorEnv(VectorEnv):
         dones = torch.logical_or(terminations, truncations)
 
         if dones.any() and self.auto_reset:
-            final_obs = torch_clone_dict(obs)
+            final_obs = obs
             env_idx = torch.arange(0, self.num_envs, device=self.device)[dones]
-            final_info = torch_clone_dict(infos)
-            obs, infos = self.reset(options=dict(env_idx=env_idx))
+            obs, _ = self.reset(options=dict(env_idx=env_idx))
+            infos["final_info"] = infos.copy()
             # gymnasium calls it final observation but it really is just o_{t+1} or the true next observation
             infos["final_observation"] = final_obs
-            infos["final_info"] = final_info
             # NOTE (stao): that adding masks like below is a bit redundant and not necessary
             # but this is to follow the standard gymnasium API
             infos["_final_info"] = dones

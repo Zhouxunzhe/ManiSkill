@@ -21,6 +21,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusers.training_utils import EMAModel
 from gymnasium import spaces
+from mani_skill.utils import gym_utils
 from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
@@ -106,6 +107,13 @@ class Args:
     """the number of workers to use for loading the training data in the torch dataloader"""
     control_mode: str = "pd_joint_delta_pos"
     """the control mode to use for the evaluation environments. Must match the control mode of the demonstration dataset."""
+    shader: str = "default"
+    """Change shader used for rendering. Default is 'default' which is very fast. Can also be 'rt' for ray tracing and generating photo-realistic renders. 
+    Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
+    visual_encoder: str = "plain_conv"
+    """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
+    # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
+    demo_type: Optional[str] = None
 
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
@@ -269,9 +277,27 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         visual_feature_dim = 256
-        self.visual_encoder = PlainConv(
-            in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
-        )
+        in_c = int(C / 3 * 4) if args.depth else C
+        if args.visual_encoder == 'plain_conv':
+            from diffusion_policy.encoders.plain_conv import PlainConv
+            self.visual_encoder = PlainConv(
+                in_channels=in_c, out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'clip':
+            from diffusion_policy.encoders.clip import CLIPEncoder
+            self.visual_encoder = CLIPEncoder(
+                out_dim=visual_feature_dim
+            )
+        elif args.visual_encoder == 'dinov2':
+            from diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            self.visual_encoder = DINOv2Encoder(
+                out_dim=visual_feature_dim
+            )
+        elif args.visual_encoder == 'resnet':
+            from diffusion_policy.encoders.resnet import ResNetEncoder
+            self.visual_encoder = ResNetEncoder(
+                out_dim=visual_feature_dim, pool_feature_map=True
+            )
         self.noise_pred_net = ConditionalUnet1D(
             input_dim=self.act_dim,  # act_horizon is not used (U-Net doesn't care)
             global_cond_dim=self.obs_horizon * (visual_feature_dim + obs_state_dim),
@@ -433,7 +459,10 @@ if __name__ == "__main__":
         reward_mode="sparse",
         obs_mode=args.obs_mode,
         render_mode="rgb_array",
-        human_render_camera_configs=dict(shader_pack="default")
+        sensor_configs=dict(shader_pack=args.shader),
+        human_render_camera_configs=dict(shader_pack=args.shader),
+        viewer_camera_configs=dict(shader_pack=args.shader),
+        mode="eval"
     )
     assert args.max_episode_steps != None, "max_episode_steps must be specified as imitation learning algorithms task solve speed is dependent on the data you train on"
     env_kwargs["max_episode_steps"] = args.max_episode_steps

@@ -16,14 +16,14 @@ import numpy as np
 import optax
 from omegaconf import OmegaConf
 
-from rfcl.agents.sac import SAC, ActorCritic, SACConfig
-from rfcl.agents.sac.networks import DiagGaussianActor
-from rfcl.data.dataset import ReplayDataset
-from rfcl.envs.make_env import EnvConfig, make_env_from_cfg
-from rfcl.logger import LoggerConfig
-from rfcl.models import NetworkConfig, build_network_from_cfg
-from rfcl.utils.parse import parse_cfg
-from rfcl.utils.spaces import get_action_dim
+from examples.baselines.rfcl.rfcl.rfcl.agents.sac import SAC, ActorCritic, SACConfig
+from examples.baselines.rfcl.rfcl.rfcl.agents.sac.networks import DiagGaussianActor
+from examples.baselines.rfcl.rfcl.rfcl.data.dataset import ReplayDataset
+from examples.baselines.rfcl.rfcl.rfcl.envs.make_env import EnvConfig, make_env_from_cfg
+from examples.baselines.rfcl.rfcl.rfcl.logger import LoggerConfig
+from examples.baselines.rfcl.rfcl.rfcl.models import NetworkConfig, build_network_from_cfg
+from examples.baselines.rfcl.rfcl.rfcl.utils.parse import parse_cfg
+from examples.baselines.rfcl.rfcl.rfcl.utils.spaces import get_action_dim
 
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -69,7 +69,7 @@ from dacite import from_dict
 
 
 def main(cfg: SACExperiment):
-    np.random.seed(cfg.seed)
+    # np.random.seed(cfg.seed)
 
     ### Setup the experiment parameters ###
 
@@ -100,8 +100,8 @@ def main(cfg: SACExperiment):
     cfg.sac.num_eval_envs = cfg.eval_env.num_envs
 
     ### Create Environments ###
-    if cfg.demo_seed is not None:
-        np.random.seed(cfg.demo_seed)
+    # if cfg.demo_seed is not None:
+    #     np.random.seed(cfg.demo_seed)
 
     if "reward_mode" in cfg.env.env_kwargs:
         reward_mode = cfg.env.env_kwargs["reward_mode"]
@@ -121,14 +121,14 @@ def main(cfg: SACExperiment):
     if demo_replay_dataset.action_scale is not None:
         env_cfg.action_scale = demo_replay_dataset.action_scale.tolist()
         eval_env_cfg.action_scale = env_cfg.action_scale
-    np.random.seed(cfg.seed)
+    # np.random.seed(cfg.seed)
 
-    env, env_meta = make_env_from_cfg(env_cfg, seed=cfg.seed)
+    env, env_meta = make_env_from_cfg(env_cfg)
     eval_env = None
     if cfg.sac.num_eval_envs > 0:
         eval_env, _ = make_env_from_cfg(
             eval_env_cfg,
-            seed=cfg.seed + 1_000_000,
+            # seed=cfg.seed + 1_000_000,
             video_path=video_path if cfg.save_eval_video else None,
         )
 
@@ -189,6 +189,8 @@ def main(cfg: SACExperiment):
             }
         fixed_wb_cfgs = {"env_cfg": parse_env_cfg(env_cfg), "eval_env_cfg": parse_env_cfg(eval_env_cfg), "num_demos": cfg.train.num_demos, "demo_type": cfg.demo_type}
         wb.config.update({**fixed_wb_cfgs}, allow_val_change=True)
+        if cfg.config_type is None:
+            cfg.config_type = "default_config"
         algo.logger.wandb_run.tags = ["rlpd", cfg.config_type]
     algo.offline_buffer = demo_replay_dataset  # create offline buffer to oversample from
     rng_key, train_rng_key = jax.random.split(jax.random.PRNGKey(cfg.seed), 2)
@@ -203,5 +205,6 @@ def main(cfg: SACExperiment):
     env.close(), eval_env.close()
 
 if __name__ == "__main__":
-    cfg = parse_cfg(default_cfg_path=sys.argv[1])
+    # cfg = parse_cfg(default_cfg_path=sys.argv[1])
+    cfg = parse_cfg(default_cfg_path="examples/baselines/rlpd/configs/base_rlpd_ms3.yml")
     main(cfg)

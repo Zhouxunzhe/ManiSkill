@@ -158,18 +158,10 @@ class BaseDigitalTwinEnv(BaseEnv):
                 assert (
                     "segmentation" in obs["sensor_data"][camera_name].keys()
                 ), "Image overlay requires segment info in the observation!"
-                if (
-                    self._rgb_overlay_images[camera_name].device
-                    != obs["sensor_data"][camera_name]["rgb"].device
-                ):
-                    self._rgb_overlay_images[camera_name] = self._rgb_overlay_images[
-                        camera_name
-                    ].to(obs["sensor_data"][camera_name]["rgb"].device)
-                overlay_img = self._rgb_overlay_images[camera_name]
                 green_screened_rgb = self._green_sceen_rgb(
                     obs["sensor_data"][camera_name]["rgb"],
                     obs["sensor_data"][camera_name]["segmentation"],
-                    overlay_img,
+                    self._rgb_overlay_images[camera_name],
                 )
                 obs["sensor_data"][camera_name]["rgb"] = green_screened_rgb
         return obs

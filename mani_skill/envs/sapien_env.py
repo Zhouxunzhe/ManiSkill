@@ -201,6 +201,9 @@ class BaseEnv(gym.Env):
         render_backend: str = "gpu",
         parallel_in_single_scene: bool = False,
         enhanced_determinism: bool = False,
+
+        mode: Optional[str] = None,
+        # """the environment mode for train / evaluation, deciding the datasets"""
     ):
         self._enhanced_determinism = enhanced_determinism
 
@@ -302,11 +305,14 @@ class BaseEnv(gym.Env):
 
         # Use a fixed (main) seed to enhance determinism
         self._main_seed = None
-        self._set_main_rng([2022 + i for i in range(self.num_envs)])
+        # TODO(zxz): Randomize seed
+        # self._set_main_rng([2022 + i for i in range(self.num_envs)])
         self._elapsed_steps = (
             torch.zeros(self.num_envs, device=self.device, dtype=torch.int32)
         )
-        obs, _ = self.reset(seed=[2022 + i for i in range(self.num_envs)], options=dict(reconfigure=True))
+        # TODO(zxz): Randomize seed
+        # obs, _ = self.reset(seed=[2022 + i for i in range(self.num_envs)], options=dict(reconfigure=True))
+        obs, _ = self.reset(options=dict(reconfigure=True))
 
         self._init_raw_obs = common.to_cpu_tensor(obs)
         """the raw observation returned by the env.reset (a cpu torch tensor/dict of tensors). Useful for future observation wrappers to use to auto generate observation spaces"""
@@ -1088,8 +1094,7 @@ class BaseEnv(gym.Env):
             sub_scenes,
             sim_config=self.sim_config,
             device=self.device,
-            parallel_in_single_scene=self._parallel_in_single_scene,
-            backend=self.backend
+            parallel_in_single_scene=self._parallel_in_single_scene
         )
         self.scene.px.timestep = 1.0 / self._sim_freq
 
