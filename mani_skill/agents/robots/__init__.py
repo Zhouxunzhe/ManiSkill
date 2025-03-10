@@ -17,3 +17,4 @@ from .widowx import *
 from .xarm6 import *
 from .xarm import XArm7Ability
 from .xmate3 import Xmate3Robotiq
+from .realman import Realman

@@ -26,15 +26,16 @@ def _load_partnet_mobility_dataset(mode):
                 PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_eval.json"
             ),
         }
-    # PARTNET_MOBILITY = {
-    #     "model_data": load_json(
-    #         PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_cabinet_drawer_train.json"
-    #     ),
-    # }
-    # for data_file in ["info_cabinet_door_train.json", "info_faucet_train.json"]:
-    #     PARTNET_MOBILITY["model_data"].update(
-    #         load_json(PACKAGE_ASSET_DIR / "partnet_mobility/meta" / data_file)
-    #     )
+    else:
+        PARTNET_MOBILITY = {
+            "model_data": load_json(
+                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_cabinet_drawer_train.json"
+            ),
+        }
+        for data_file in ["info_cabinet_door_train.json", "info_faucet_train.json"]:
+            PARTNET_MOBILITY["model_data"].update(
+                load_json(PACKAGE_ASSET_DIR / "partnet_mobility/meta" / data_file)
+            )
 
     def find_urdf_path(model_id):
         model_dir = ASSET_DIR / "partnet_mobility/dataset" / str(model_id)
