@@ -5,9 +5,9 @@ algo: sac
 verbose: 1
 # Environment configuration
 env:
-  env_id: None
+  env_id: "FoldSuitcase-v1"
   max_episode_steps: 50
-  num_envs: 8
+  num_envs: 4
   env_type: "gym:cpu"
   env_kwargs:
     control_mode: "pd_joint_delta_pos"
@@ -59,7 +59,7 @@ train:
   actor_lr: 3e-4
   critic_lr: 3e-4
   steps: 100_000_000
-  dataset_path: None
+  dataset_path: "/home/zhouxunzhe/robo_dev/ManiSkill/demos/FoldSuitcase-v1/motionplanning/suitcase_1k.state.pd_joint_delta_pos.cpu.h5"
   shuffle_demos: True
   num_demos: 1000
 
@@ -67,8 +67,8 @@ train:
 
 logger:
   tensorboard: True
-  wandb: False
-
+  wandb: True
+  exp_name: "rlpd-FoldSuitcase-Test"
   workspace: "exps"
   project_name: "ManiSkill"
   wandb_cfg:

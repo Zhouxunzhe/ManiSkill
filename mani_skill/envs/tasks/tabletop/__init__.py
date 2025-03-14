@@ -16,3 +16,5 @@ from .place_sphere import PlaceSphereEnv
 from .roll_ball import RollBallEnv
 from .push_t import PushTEnv
 from .pull_cube_tool import PullCubeToolEnv
+from .fold_suitcase import FoldSuitcaseEnv
+from .rm_pick import RMPickEnv

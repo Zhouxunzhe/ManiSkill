@@ -18,16 +18,16 @@ import optax
 from omegaconf import OmegaConf
 import wandb as wb
 
-from rfcl.agents.sac import SAC, ActorCritic, SACConfig
-from rfcl.agents.sac.networks import DiagGaussianActor
-from rfcl.data.dataset import ReplayDataset, get_states_dataset
-from rfcl.envs.make_env import EnvConfig, get_initial_state_wrapper, make_env_from_cfg
-from rfcl.envs.wrappers.curriculum import ReverseCurriculumWrapper
-from rfcl.envs.wrappers.forward_curriculum import SeedBasedForwardCurriculumWrapper
-from rfcl.logger import LoggerConfig
-from rfcl.models import NetworkConfig, build_network_from_cfg
-from rfcl.utils.parse import parse_cfg
-from rfcl.utils.spaces import get_action_dim
+from examples.baselines.rfcl.rfcl.rfcl.agents.sac import SAC, ActorCritic, SACConfig
+from examples.baselines.rfcl.rfcl.rfcl.agents.sac.networks import DiagGaussianActor
+from examples.baselines.rfcl.rfcl.rfcl.data.dataset import ReplayDataset, get_states_dataset
+from examples.baselines.rfcl.rfcl.rfcl.envs.make_env import EnvConfig, get_initial_state_wrapper, make_env_from_cfg
+from examples.baselines.rfcl.rfcl.rfcl.envs.wrappers.curriculum import ReverseCurriculumWrapper
+from examples.baselines.rfcl.rfcl.rfcl.envs.wrappers.forward_curriculum import SeedBasedForwardCurriculumWrapper
+from examples.baselines.rfcl.rfcl.rfcl.logger import LoggerConfig
+from examples.baselines.rfcl.rfcl.rfcl.models import NetworkConfig, build_network_from_cfg
+from examples.baselines.rfcl.rfcl.rfcl.utils.parse import parse_cfg
+from examples.baselines.rfcl.rfcl.rfcl.utils.spaces import get_action_dim
 
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"

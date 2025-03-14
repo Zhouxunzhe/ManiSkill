@@ -203,5 +203,6 @@ def main(cfg: SACExperiment):
     env.close(), eval_env.close()
 
 if __name__ == "__main__":
-    cfg = parse_cfg(default_cfg_path=sys.argv[1])
+    # cfg = parse_cfg(default_cfg_path=sys.argv[1])
+    cfg = parse_cfg(default_cfg_path="examples/baselines/rlpd/configs/base_rlpd_ms3.yml")
     main(cfg)

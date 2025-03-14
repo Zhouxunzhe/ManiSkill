@@ -10,16 +10,17 @@ from transforms3d.euler import euler2quat
 
 from mani_skill.agents.multi_agent import MultiAgent
 from mani_skill.agents.robots.fetch import FETCH_WHEELS_COLLISION_BIT
+from mani_skill.agents.robots.realman import REALMAN_WHEELS_COLLISION_BIT, REALMAN_BASE_COLLISION_BIT
 from mani_skill.utils.building.ground import build_ground
 from mani_skill.utils.scene_builder import SceneBuilder
 
 
 # TODO (stao): make the build and initialize api consistent with other scenes
 class TableSceneBuilder(SceneBuilder):
-    def build(self):
+    def build(self, scale=1.75, table_path="table.glb"):
         builder = self.scene.create_actor_builder()
         model_dir = Path(osp.dirname(__file__)) / "assets"
-        table_model_file = str(model_dir / "table.glb")
+        table_model_file = str(model_dir / table_path)
         scale = 1.75
 
         table_pose = sapien.Pose(q=euler2quat(0, 0, np.pi / 2))
@@ -66,7 +67,7 @@ class TableSceneBuilder(SceneBuilder):
             qpos = np.array(
                 [
                     0.0,
-                    np.pi / 8,
+                    -np.pi / 8,
                     0,
                     -np.pi * 5 / 8,
                     0,
@@ -95,8 +96,19 @@ class TableSceneBuilder(SceneBuilder):
             self.env.agent.robot.set_pose(sapien.Pose([-0.615, 0, 0]))
         elif self.env.robot_uids == "panda_wristcam":
             # fmt: off
+            # TODO(zxz): modify robot initial pose here
             qpos = np.array(
-                [0.0, np.pi / 8, 0, -np.pi * 5 / 8, 0, np.pi * 3 / 4, -np.pi / 4, 0.04, 0.04]
+                [
+                    0.0 + np.random.uniform(-1, 1) * 0.3,
+                    -np.pi * 1 / 8 + np.random.uniform(-1, 1) * 0.1,
+                    0 + np.random.uniform(-1, 1) * 0.3,
+                    -np.pi * 6 / 8 + np.random.uniform(-1, 1) * 0.1,
+                    0 + np.random.uniform(-1, 1) * 0.2,
+                    np.pi * 3 / 4 + np.random.uniform(-1, 1) * 0.3,
+                    np.pi / 4,
+                    0.04,
+                    0.04
+                ]
             )
             # fmt: on
             if self.env._enhanced_determinism:
@@ -177,6 +189,10 @@ class TableSceneBuilder(SceneBuilder):
 
             self.ground.set_collision_group_bit(
                 group=2, bit_idx=FETCH_WHEELS_COLLISION_BIT, bit=1
+            )
+        elif self.env.robot_uids == "realman":
+            self.ground.set_collision_group_bit(
+                group=2, bit_idx=REALMAN_BASE_COLLISION_BIT, bit=1
             )
         elif self.env.robot_uids == ("panda", "panda"):
             agent: MultiAgent = self.env.agent
