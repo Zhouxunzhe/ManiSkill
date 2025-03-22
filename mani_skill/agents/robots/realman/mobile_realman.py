@@ -21,16 +21,16 @@ from mani_skill.utils.structs.types import Array
 REALMAN_RIGHT_COLLISION_BIT = 28
 REALMAN_LEFT_COLLISION_BIT = 29
 REALMAN_WHEELS_COLLISION_BIT = 30
-"""Collision bit of the realman robot wheel links"""
+"""Collision bit of the mobile_realman robot wheel links"""
 REALMAN_BASE_COLLISION_BIT = 31
-"""Collision bit of the realman base"""
+"""Collision bit of the mobile_realman base"""
 
 
 @register_agent()
 class Realman(BaseAgent):
     disable_self_collisions = True
-    uid = "realman"
-    urdf_path = f"{PACKAGE_ASSET_DIR}/robots/realman/dual_65B_arm_robot/urdf/dual_65B_arm_robot.urdf"
+    uid = "mobile_realman"
+    urdf_path = f"{PACKAGE_ASSET_DIR}/robots/mobile_realman/dual_65B_arm_robot/urdf/dual_65B_arm_robot.urdf"
     urdf_config = dict(
         _materials=dict(
             finger=dict(static_friction=2.0, dynamic_friction=2.0, restitution=0.0)

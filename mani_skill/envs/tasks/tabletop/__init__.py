@@ -17,4 +17,5 @@ from .roll_ball import RollBallEnv
 from .push_t import PushTEnv
 from .pull_cube_tool import PullCubeToolEnv
 from .fold_suitcase import FoldSuitcaseEnv
-from .rm_pick import RMPickEnv
+from .mobile_rm_pick import MobileRMPickEnv
+from .two_robot_fold import TwoRobotFoldEnv

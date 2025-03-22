@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 import mplib
 import numpy as np
 import sapien
@@ -23,10 +25,15 @@ class PandaArmMotionPlanningSolver:
         print_env_info: bool = True,
         joint_vel_limits=0.9,
         joint_acc_limits=0.9,
+        multi_robot_id = None
     ):
         self.env = env
         self.base_env: BaseEnv = env.unwrapped
         self.env_agent: BaseAgent = self.base_env.agent
+        self.multi_robot_id = None
+        if multi_robot_id is not None:
+            self.multi_robot_id = multi_robot_id
+            self.env_agent: BaseAgent = self.base_env.agent.agents[self.multi_robot_id]
         self.robot = self.env_agent.robot
         self.joint_vel_limits = joint_vel_limits
         self.joint_acc_limits = joint_acc_limits
@@ -49,7 +56,10 @@ class PandaArmMotionPlanningSolver:
                 )
             else:
                 self.grasp_pose_visual = self.base_env.scene.actors["grasp_pose_visual"]
-            self.grasp_pose_visual.set_pose(self.base_env.agent.tcp.pose)
+            if multi_robot_id is not None:
+                self.grasp_pose_visual.set_pose(self.base_env.agent.agents[self.multi_robot_id].tcp.pose)
+            else:
+                self.grasp_pose_visual.set_pose(self.base_env.agent.tcp.pose)
         self.elapsed_steps = 0
 
         self.use_point_cloud = False
@@ -81,7 +91,7 @@ class PandaArmMotionPlanningSolver:
         planner.set_base_pose(np.hstack([self.base_pose.p, self.base_pose.q]))
         return planner
 
-    def follow_path(self, result, refine_steps: int = 0):
+    def follow_path(self, result, other_gripper_state=None, refine_steps: int = 0):
         n_step = result["position"].shape[0]
         for i in range(n_step + refine_steps):
             qpos = result["position"][min(i, n_step - 1)]
@@ -90,6 +100,13 @@ class PandaArmMotionPlanningSolver:
                 action = np.hstack([qpos, qvel, self.gripper_state])
             else:
                 action = np.hstack([qpos, self.gripper_state])
+            if self.multi_robot_id is not None:
+                action = np.hstack([qpos, self.gripper_state])
+                other_action = np.hstack([self.env.agent.agents[1-self.multi_robot_id].robot.qpos[0][:7], other_gripper_state])
+                action = OrderedDict({
+                    f'panda_wristcam-{self.multi_robot_id}': action,
+                    f'panda_wristcam-{1-self.multi_robot_id}': other_action
+                })
             obs, reward, terminated, truncated, info = self.env.step(action)
             self.elapsed_steps += 1
             if self.print_env_info:
@@ -124,7 +141,7 @@ class PandaArmMotionPlanningSolver:
         return self.follow_path(result, refine_steps=refine_steps)
 
     def move_to_pose_with_screw(
-        self, pose: sapien.Pose, dry_run: bool = False, refine_steps: int = 0
+        self, pose: sapien.Pose, dry_run: bool = False, refine_steps: int = 0, other_gripper_state=None
     ):
         pose = to_sapien_pose(pose)
         # try screw two times before giving up
@@ -151,9 +168,9 @@ class PandaArmMotionPlanningSolver:
         self.render_wait()
         if dry_run:
             return result
-        return self.follow_path(result, refine_steps=refine_steps)
+        return self.follow_path(result, other_gripper_state, refine_steps=refine_steps)
 
-    def open_gripper(self):
+    def open_gripper(self, other_gripper_state=None):
         self.gripper_state = OPEN
         qpos = self.robot.get_qpos()[0, :-2].cpu().numpy()
         for i in range(6):
@@ -161,6 +178,13 @@ class PandaArmMotionPlanningSolver:
                 action = np.hstack([qpos, self.gripper_state])
             else:
                 action = np.hstack([qpos, qpos * 0, self.gripper_state])
+            if self.multi_robot_id is not None:
+                action = np.hstack([qpos, self.gripper_state])
+                other_action = np.hstack([self.env.agent.agents[1-self.multi_robot_id].robot.qpos[0][:7], other_gripper_state])
+                action = OrderedDict({
+                    f'panda_wristcam-{self.multi_robot_id}': action,
+                    f'panda_wristcam-{1 - self.multi_robot_id}': other_action
+                })
             obs, reward, terminated, truncated, info = self.env.step(action)
             self.elapsed_steps += 1
             if self.print_env_info:
@@ -171,14 +195,21 @@ class PandaArmMotionPlanningSolver:
                 self.base_env.render_human()
         return obs, reward, terminated, truncated, info
 
-    def close_gripper(self, t=6, gripper_state = CLOSED):
-        self.gripper_state = gripper_state
+    def close_gripper(self, other_gripper_state=None, t=6):
+        self.gripper_state = CLOSED
         qpos = self.robot.get_qpos()[0, :-2].cpu().numpy()
         for i in range(t):
             if self.control_mode == "pd_joint_pos":
                 action = np.hstack([qpos, self.gripper_state])
             else:
                 action = np.hstack([qpos, qpos * 0, self.gripper_state])
+            if self.multi_robot_id is not None:
+                action = np.hstack([qpos, self.gripper_state])
+                other_action = np.hstack([self.env.agent.agents[1-self.multi_robot_id].robot.qpos[0][:7], other_gripper_state])
+                action = OrderedDict({
+                    f'panda_wristcam-{self.multi_robot_id}': action,
+                    f'panda_wristcam-{1 - self.multi_robot_id}': other_action
+                })
             obs, reward, terminated, truncated, info = self.env.step(action)
             self.elapsed_steps += 1
             if self.print_env_info:

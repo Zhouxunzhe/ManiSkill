@@ -9,7 +9,7 @@ from tqdm import tqdm
 import os.path as osp
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.trajectory.merge_trajectory import merge_trajectories
-from mani_skill.examples.motionplanning.realman.solutions import solveRMPick
+from mani_skill.examples.motionplanning.mobile_realman.solutions import solveRMPick
 MP_SOLUTIONS = {
     "RMPick=v1": solveRMPick
 }

@@ -2,9 +2,9 @@ import numpy as np
 import sapien
 
 from mani_skill.envs.tasks import PickCubeEnv
-from mani_skill.examples.motionplanning.realman.motionplanner import \
+from mani_skill.examples.motionplanning.mobile_realman.motionplanner import \
     RealmanArmMotionPlanningSolver
-from mani_skill.examples.motionplanning.realman.utils import (
+from mani_skill.examples.motionplanning.mobile_realman.utils import (
     compute_grasp_info_by_obb, get_actor_obb)
 
 def solve(env: PickCubeEnv, seed=None, debug=False, vis=False):

@@ -78,26 +78,33 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
     print(f"Motion Planning Running on {env_id}")
     pbar = tqdm(range(args.num_traj), desc=f"proc_id: {proc_id}")
     seed = start_seed
-    successes = []
-    solution_episode_lengths = []
+    left_successes = []
+    right_successes = []
+    left_solution_episode_lengths = []
+    right_solution_episode_lengths = []
     failed_motion_plans = 0
     passed = 0
     while True:
-        # try:
-        res = solve(env, seed=seed, debug=False, vis=True if args.vis else False)
-        # except Exception as e:
-        #     print(f"Cannot find valid solution because of an error in motion planning solution: {e}")
-        #     res = -1
+        try:
+            left_res, right_res = solve(env, seed=seed, debug=False, vis=True if args.vis else False)
+        except Exception as e:
+            print(f"Cannot find valid solution because of an error in motion planning solution: {e}")
+            left_res, right_res = (-1, -1)
 
-        if res == -1:
-            success = False
+        if left_res == -1 or right_res == -1:
+            all_success = left_success = right_success = False
             failed_motion_plans += 1
         else:
-            success = res[-1]["success"].item()
-            elapsed_steps = res[-1]["elapsed_steps"].item()
-            solution_episode_lengths.append(elapsed_steps)
-        successes.append(success)
-        if args.only_count_success and not success:
+            left_success = left_res[-1]["success"].item()
+            right_success = right_res[-1]["success"].item()
+            all_success = True
+            left_elapsed_steps = left_res[-1]["elapsed_steps"].item()
+            right_elapsed_steps = right_res[-1]["elapsed_steps"].item()
+            left_solution_episode_lengths.append(left_elapsed_steps)
+            right_solution_episode_lengths.append(right_elapsed_steps)
+        left_successes.append(left_success)
+        right_successes.append(right_success)
+        if args.only_count_success and not all_success:
             seed += 1
             env.flush_trajectory(save=False)
             if args.save_video:
@@ -110,10 +117,13 @@ def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
             pbar.update(1)
             pbar.set_postfix(
                 dict(
-                    success_rate=np.mean(successes),
+                    left_success_rate=np.mean(left_successes),
+                    right_success_rate=np.mean(right_successes),
                     failed_motion_plan_rate=failed_motion_plans / (seed + 1),
-                    avg_episode_length=np.mean(solution_episode_lengths),
-                    max_episode_length=np.max(solution_episode_lengths),
+                    left_avg_episode_length=np.mean(left_solution_episode_lengths),
+                    right_avg_episode_length=np.mean(right_solution_episode_lengths),
+                    left_max_episode_length=np.max(left_solution_episode_lengths),
+                    right_max_episode_length=np.max(right_solution_episode_lengths),
                     # min_episode_length=np.min(solution_episode_lengths)
                 )
             )

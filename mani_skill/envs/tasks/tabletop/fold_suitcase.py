@@ -55,20 +55,6 @@ SUITCASE_COLLISION_BIT = 29
 
 @register_env("FoldSuitcase-v1", max_episode_steps=500)
 class FoldSuitcaseEnv(BaseEnv):
-    """
-    **Task Description:**
-    A simple task where the objective is to push and move a cube to a goal region in front of it
-
-    **Randomizations:**
-    - the cube's xy position is randomized on top of a table in the region [0.1, 0.1] x [-0.1, -0.1]. It is placed flat on the table
-    - the target goal region is marked by a red/white circular target. The position of the target is fixed to be the cube xy position + [0.1 + goal_radius, 0]
-
-    **Success Conditions:**
-    - the cube's xy position is within goal_radius (default 0.1) of the target's xy position by euclidean distance.
-    """
-
-    # _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/PushCube-v1_rt.mp4"
-
     SUPPORTED_ROBOTS = ["panda_wristcam"]
     fixed_model_id = "9748"
 
@@ -178,13 +164,42 @@ class FoldSuitcaseEnv(BaseEnv):
         # print("model_id:", model_ids)
         for i, model_id in enumerate(model_ids):
             if model_id in self.suitcase_list:
-                self._load_suitcase(self.lid_types, [model_id], [link_ids[i]])
+                self.origin_base = sapien.Pose(
+                    p=[-0.1, 0, self.suitcase_half_size],
+                    q=euler2quat(np.pi / 2, np.pi / 2, 0)
+                )
+                self._load_suitcase(self.origin_base, self.lid_types, [model_id], [link_ids[i]])
             elif model_id in self.box_list:
-                self._load_box(self.lid_types, [model_id], [link_ids[i]])
+                self.origin_base = sapien.Pose(
+                    p=[-0.1,
+                       0,
+                       self.suitcase_half_size],
+                    q=euler2quat(0,
+                                 0,
+                                 np.pi / 2)
+                )
+                self._load_box(self.origin_base, self.lid_types, [model_id], [link_ids[i]])
             elif model_id in self.high_box_list:
-                self._load_high_box(self.lid_types, [model_id], [link_ids[i]])
+                self.origin_base = sapien.Pose(
+                    p=[-0.1,
+                       -0.,
+                       self.suitcase_half_size / 2],
+                    q=euler2quat(0,
+                                 0,
+                                 np.pi / 2)
+                )
+                self._load_high_box(self.origin_base, self.lid_types, [model_id], [link_ids[i]])
             elif model_id in self.laptop_list:
-                self._load_laptop(self.lid_types, [model_id], [link_ids[i]])
+                self.origin_base = sapien.Pose(
+                    p=[-0.1,
+                       0,
+                       0 + self.suitcase_half_size],
+                    q=euler2quat(
+                        0,
+                        0,
+                        np.pi / 2)
+                )
+                self._load_laptop(self.origin_base, self.lid_types, [model_id], [link_ids[i]])
 
     def _transform_point(self, origin_base: sapien.Pose, new_base: sapien.Pose, origin_pos: sapien.Pose):
         from scipy.spatial.transform import Rotation
@@ -216,7 +231,7 @@ class FoldSuitcaseEnv(BaseEnv):
         )
         return new_pos
 
-    def _load_suitcase(self, joint_types: List[str], model_ids, link_ids):
+    def _load_suitcase(self, origin_base, joint_types: List[str], model_ids, link_ids):
         # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
         # GPU/CPU simulation backends. This is useful for replaying demonstrations.
 
@@ -231,30 +246,28 @@ class FoldSuitcaseEnv(BaseEnv):
                 self.scene, f"partnet-mobility:{model_id}", mode=self.mode
             )
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
-            self.origin_base = sapien.Pose(
-                p=[-0.1, 0, self.suitcase_half_size],
-                q=euler2quat(np.pi / 2, np.pi / 2, 0)
-            )
             # original
-            # self.new_base = suitcase_builder.initial_pose = sapien.Pose(
+            # new_base = suitcase_builder.initial_pose = sapien.Pose(
             #     p=[-0.1, 0, self.suitcase_half_size],
             #     q=euler2quat(np.pi / 2, np.pi / 2, 0)
             # )
             # rotate Y
-            # self.new_base = suitcase_builder.initial_pose = sapien.Pose(
+            # new_base = suitcase_builder.initial_pose = sapien.Pose(
             #     p=[-0.1, 0, self.suitcase_half_size],
             #     q=euler2quat(np.pi / 2, np.pi * 3/8, 0)
             # )
             # rotate Z
-            # self.new_base = suitcase_builder.initial_pose = sapien.Pose(
+            # new_base = suitcase_builder.initial_pose = sapien.Pose(
             #     p=[-0.1, 0, self.suitcase_half_size],
             #     q=euler2quat(np.pi / 2, np.pi / 2, np.pi / 8)
             # )
             # random new base pose
-            self.new_base = suitcase_builder.initial_pose = sapien.Pose(
-                p=[-0.2 + np.random.uniform(-1, 1) * 0.02, -0.1 + np.random.uniform(-1, 1) * 0.02, self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
-                q=euler2quat(np.pi / 2, np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi, 0.0 + np.random.uniform(-1, 1) * 1/16 * np.pi)
-            )
+            # TODO(zxz): set new_base here
+            # new_base = suitcase_builder.initial_pose = sapien.Pose(
+            #     p=[-0.2 + np.random.uniform(-1, 1) * 0.02, -0.1 + np.random.uniform(-1, 1) * 0.02, self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
+            #     q=euler2quat(np.pi / 2, np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi, 0.0 + np.random.uniform(-1, 1) * 1/16 * np.pi)
+            # )
+            new_base = suitcase_builder.initial_pose = origin_base
             suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
@@ -313,16 +326,16 @@ class FoldSuitcaseEnv(BaseEnv):
             )
 
             self.waypoint_pos1 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.483, 0.4],
                     q=[-0.0, 1.000, 0, 0.0]
                 )
             )
             self.waypoint_pos2 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.32, 0.03],
                     q=[0.635, 0.772, 0.016, 0.015]
@@ -330,8 +343,8 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id == "103762":
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.32, 0.12],
                         q=[0.635, 0.772, 0.016, 0.015]
@@ -339,47 +352,47 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id == "100767":
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.35, 0.12],
                         q=[0.635, 0.772, 0.016, 0.015]
                     )
                 )
             self.waypoint_pos3 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.23, 0.4],
                     q=[0.3, 0.953, 0.012, 0.013]
                 )
             )
             self.waypoint_pos4 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.019, 0.4],
                     q=[-0.086, 0.996, 0.004, 0.026]
                 )
             )
             self.waypoint_pos5 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.16, 0.23],
                     q=[-0.503, 0.864, -0.008, 0.018]
                 )
             )
             self.waypoint_pos6 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.331, 0.347],
                     q=[-0.503, 0.864, -0.008, 0.018]
                 )
             )
 
-    def _load_laptop(self, joint_types: List[str], model_ids, link_ids):
+    def _load_laptop(self, origin_base, joint_types: List[str], model_ids, link_ids):
         # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
         # GPU/CPU simulation backends. This is useful for replaying demonstrations.
 
@@ -394,17 +407,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 self.scene, f"partnet-mobility:{model_id}", mode=self.mode
             )
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
-            self.origin_base = sapien.Pose(
-                p=[-0.1,
-                   0,
-                   0 + self.suitcase_half_size],
-                q=euler2quat(
-                    0,
-                    0,
-                    np.pi / 2)
-            )
             # random new base pose
-            self.new_base = suitcase_builder.initial_pose = sapien.Pose(
+            new_base = suitcase_builder.initial_pose = sapien.Pose(
                 p=[-0.1 + np.random.uniform(-1, 1) * 0.02,
                    -0.0 + np.random.uniform(-1, 1) * 0.02,
                    -0. + self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
@@ -472,8 +476,8 @@ class FoldSuitcaseEnv(BaseEnv):
             # waypoint 1
             if model_id in self.laptop_180:
                 self.waypoint_pos1 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.483, 0.37],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -481,8 +485,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             if model_id in self.laptop_90:
                 self.waypoint_pos1 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.13, 0.5],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -490,8 +494,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             if model_id in ["11691"]:
                 self.waypoint_pos1 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.3, 0.5],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -499,8 +503,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in self.laptop_135:
                 self.waypoint_pos1 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.45, 0.5],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -510,8 +514,8 @@ class FoldSuitcaseEnv(BaseEnv):
             # waypoint 2
             if model_id in self.laptop_180:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.22, 0.15],
                         q=[0.635, 0.772, 0.016, 0.015]
@@ -519,8 +523,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             if model_id in ["10885", "11945"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.15, 0.35],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -528,8 +532,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["11030", "11248"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.08, 0.35],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -537,8 +541,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["11888"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.04, 0.35],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -546,8 +550,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in self.laptop_90:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.13, 0.35],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -555,8 +559,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             if model_id in ["12073"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.23, 0.36],
                         q=[0.3, 0.953, 0.012, 0.013]
@@ -564,8 +568,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["9960", "10269", "10289", "11477", "11581"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.23, 0.27],
                         q=[0.3, 0.953, 0.012, 0.013]
@@ -573,8 +577,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["10098", "10915", "11242", "11405"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.23, 0.23],
                         q=[0.3, 0.953, 0.012, 0.013]
@@ -582,8 +586,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["10383", "10626", "11075"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.23, 0.2],
                         q=[0.3, 0.953, 0.012, 0.013]
@@ -591,8 +595,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["10697"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.23, 0.17],
                         q=[0.6, 0.753, 0.012, 0.013]
@@ -600,8 +604,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in self.laptop_135:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.15, 0.3],
                         q=[0.3, 0.953, 0.012, 0.013]
@@ -610,8 +614,8 @@ class FoldSuitcaseEnv(BaseEnv):
 
             # waypoint 3
             self.waypoint_pos3 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.23, 0.3],
                     q=[0.3, 0.953, 0.012, 0.013]
@@ -619,8 +623,8 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id in self.laptop_90 or self.laptop_135:
                 self.waypoint_pos3 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.1, 0.35],
                         q=[-0.0, 1.000, 0, 0.0]
@@ -629,8 +633,8 @@ class FoldSuitcaseEnv(BaseEnv):
 
             # waypoint 4
             self.waypoint_pos4 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.019, 0.3],
                     q=[-0.086, 0.996, 0.004, 0.026]
@@ -639,8 +643,8 @@ class FoldSuitcaseEnv(BaseEnv):
 
             # waypoint 5
             self.waypoint_pos5 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.16, 0.15],
                     q=[-0.503, 0.864, -0.008, 0.018]
@@ -649,15 +653,15 @@ class FoldSuitcaseEnv(BaseEnv):
 
             # # waypoint 6
             self.waypoint_pos6 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.331, 0.247],
                     q=[-0.503, 0.864, -0.008, 0.018]
                 )
             )
 
-    def _load_box(self, joint_types: List[str], model_ids, link_ids):
+    def _load_box(self, origin_base, joint_types: List[str], model_ids, link_ids):
         # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
         # GPU/CPU simulation backends. This is useful for replaying demonstrations.
 
@@ -672,16 +676,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 self.scene, f"partnet-mobility:{model_id}", mode=self.mode
             )
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
-            self.origin_base = sapien.Pose(
-                p=[-0.1,
-                   0,
-                   self.suitcase_half_size],
-                q=euler2quat(0,
-                             0,
-                             np.pi / 2)
-            )
             # random new base pose
-            self.new_base = sapien.Pose(
+            new_base = sapien.Pose(
                 p=[-0.1 + np.random.uniform(-1, 1) * 0.02,
                    0 + np.random.uniform(-1, 1) * 0.02,
                    self.suitcase_half_size + np.random.uniform(-1, 1) * 0.02],
@@ -689,8 +685,8 @@ class FoldSuitcaseEnv(BaseEnv):
                              0 + np.random.uniform(-1, 1) * 1/16 * np.pi,
                              np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi)
             )
-            # self.new_base = self.origin_base
-            suitcase_builder.initial_pose = self.new_base
+            # new_base = origin_base
+            suitcase_builder.initial_pose = new_base
             suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
@@ -749,16 +745,16 @@ class FoldSuitcaseEnv(BaseEnv):
             )
 
             self.waypoint_pos1 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.483, 0.4],
                     q=[-0.0, 1.000, 0, 0.0]
                 )
             )
             self.waypoint_pos2 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.32, 0.03],
                     q=[0.635, 0.772, 0.016, 0.015]
@@ -766,8 +762,8 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id == "100189":
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.32, 0.17],
                         q=[0.635, 0.772, 0.016, 0.015]
@@ -775,47 +771,47 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id == "102379":
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.25, 0.15],
                         q=[0.635, 0.772, 0.016, 0.015]
                     )
                 )
             self.waypoint_pos3 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.23, 0.34],
                     q=[0.3, 0.953, 0.012, 0.013]
                 )
             )
             self.waypoint_pos4 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.019, 0.34],
                     q=[-0.086, 0.996, 0.004, 0.026]
                 )
             )
             self.waypoint_pos5 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.16, 0.23],
                     q=[-0.503, 0.864, -0.008, 0.018]
                 )
             )
             self.waypoint_pos6 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.331, 0.347],
                     q=[-0.503, 0.864, -0.008, 0.018]
                 )
             )
 
-    def _load_high_box(self, joint_types: List[str], model_ids, link_ids):
+    def _load_high_box(self, origin_base, joint_types: List[str], model_ids, link_ids):
         # we sample random suitcase model_ids with numpy as numpy is always deterministic based on seed, regardless of
         # GPU/CPU simulation backends. This is useful for replaying demonstrations.
 
@@ -830,16 +826,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 self.scene, f"partnet-mobility:{model_id}", mode=self.mode
             )
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
-            self.origin_base = sapien.Pose(
-                p=[-0.1,
-                   -0.,
-                   self.suitcase_half_size/2],
-                q=euler2quat(0,
-                             0,
-                             np.pi / 2)
-            )
             # random new base pose
-            self.new_base = sapien.Pose(
+            new_base = sapien.Pose(
                 p=[-0.1 + np.random.uniform(-1, 1) * 0.02,
                    -0. + np.random.uniform(-1, 1) * 0.02,
                    self.suitcase_half_size/2 + np.random.uniform(-1, 1) * 0.02],
@@ -847,8 +835,8 @@ class FoldSuitcaseEnv(BaseEnv):
                              0 + np.random.uniform(-1, 1) * 1/16 * np.pi,
                              np.pi / 2 + np.random.uniform(-1, 1) * 1/16 * np.pi)
             )
-            # self.new_base = self.origin_base
-            suitcase_builder.initial_pose = self.new_base
+            # new_base = origin_base
+            suitcase_builder.initial_pose = new_base
             suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
             # this disables self collisions by setting the group 2 bit at SUITCASE_COLLISION_BIT all the same
@@ -907,8 +895,8 @@ class FoldSuitcaseEnv(BaseEnv):
             )
 
             self.waypoint_pos1 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.483, 0.4],
                     q=[-0.0, 1.000, 0, 0.0]
@@ -916,16 +904,16 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id in ["100214", "100243"]:
                 self.waypoint_pos1 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.183, 0.4],
                         q=[-0.0, 1.000, 0, 0.0]
                     )
                 )
             self.waypoint_pos2 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.22, 0.2],
                     q=[0.635, 0.772, 0.016, 0.015]
@@ -933,8 +921,8 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id in ["48492", "100174"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.34, 0.16],
                         q=[0.635, 0.772, 0.016, 0.015]
@@ -942,8 +930,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["100221"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.28, 0.07],
                         q=[0.635, 0.772, 0.016, 0.015]
@@ -951,8 +939,8 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["100214", "100243"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.14, 0.26],
                         q=[0.3, 0.953, 0.012, 0.013]
@@ -960,16 +948,16 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["100664"]:
                 self.waypoint_pos2 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.18, 0.18],
                         q=[0.635, 0.772, 0.016, 0.015]
                     )
                 )
             self.waypoint_pos3 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.23, 0.3],
                     q=[0.3, 0.953, 0.012, 0.013]
@@ -977,16 +965,16 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id in ["100214", "100243", "100664"]:
                 self.waypoint_pos3 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.14, 0.26],
                         q=[0.3, 0.953, 0.012, 0.013]
                     )
                 )
             self.waypoint_pos4 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, 0.019, 0.3],
                     q=[-0.086, 0.996, 0.004, 0.026]
@@ -994,16 +982,16 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id in ["100214", "100243"]:
                 self.waypoint_pos4 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, 0.019, 0.26],
                         q=[-0.086, 0.996, 0.004, 0.026]
                     )
                 )
             self.waypoint_pos5 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.16, 0.23],
                     q=[-0.503, 0.864, -0.008, 0.018]
@@ -1011,8 +999,8 @@ class FoldSuitcaseEnv(BaseEnv):
             )
             if model_id in ["47645", "100214", "100243", "100664", "102456"]:
                 self.waypoint_pos5 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, -0.1, 0.2],
                         q=[-0.503, 0.864, -0.008, 0.018]
@@ -1020,16 +1008,16 @@ class FoldSuitcaseEnv(BaseEnv):
                 )
             elif model_id in ["100174"]:
                 self.waypoint_pos5 = self._transform_point(
-                    self.origin_base,
-                    self.new_base,
+                    origin_base,
+                    new_base,
                     sapien.Pose(
                         p=[-0.2, -0.05, 0.2],
                         q=[-0.503, 0.864, -0.008, 0.018]
                     )
                 )
             self.waypoint_pos6 = self._transform_point(
-                self.origin_base,
-                self.new_base,
+                origin_base,
+                new_base,
                 sapien.Pose(
                     p=[-0.2, -0.331, 0.347],
                     q=[-0.503, 0.864, -0.008, 0.018]
@@ -1304,12 +1292,12 @@ class FoldSuitcaseEnv(BaseEnv):
                     sensor_obs[name] = sensor.get_obs(position=False, segmentation=False, apply_texture_transforms=apply_texture_transforms)
                 else:
                     sensor_obs[name] = sensor.get_obs(
-                        rgb=self._visual_obs_mode_struct.rgb,
-                        depth=self._visual_obs_mode_struct.depth,
-                        position=self._visual_obs_mode_struct.position,
-                        segmentation=self._visual_obs_mode_struct.segmentation,
-                        normal=self._visual_obs_mode_struct.normal,
-                        albedo=self._visual_obs_mode_struct.albedo,
+                        rgb=self.obs_mode_struct.visual.rgb,
+                        depth=self.obs_mode_struct.visual.depth,
+                        position=self.obs_mode_struct.visual.position,
+                        segmentation=self.obs_mode_struct.visual.segmentation,
+                        normal=self.obs_mode_struct.visual.normal,
+                        albedo=self.obs_mode_struct.visual.albedo,
                         apply_texture_transforms=apply_texture_transforms,
                         fisheye=sensor.camera.name=='hand_camera',
                     )

@@ -6,5 +6,7 @@ from .push_cube import solve as solvePushCube
 from .pull_cube_tool import solve as solvePullCubeTool
 from .lift_peg_upright import solve as solveLiftPegUpright
 from .pull_cube import solve as solvePullCube
+from .draw_svg import solve as solveDrawSVG
+from .draw_triangle import solve as solveDrawTriangle
 from .fold_suitcase import solve as solveFoldSuitcase
-from .rm_pick import solve as solveRMPick
+from .two_robot_fold import solve as solveTwoRobotFold

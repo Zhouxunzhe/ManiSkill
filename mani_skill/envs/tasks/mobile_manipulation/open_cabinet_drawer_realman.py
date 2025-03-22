@@ -50,7 +50,7 @@ class OpenCabinetDrawerRealmanEnv(BaseEnv):
 
     _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/OpenCabinetDrawer-v1_rt.mp4"
 
-    SUPPORTED_ROBOTS = ["realman"]
+    SUPPORTED_ROBOTS = ["mobile_realman"]
     agent: Union[Realman]
     handle_types = ["prismatic"]
     TRAIN_JSON = (
@@ -62,7 +62,7 @@ class OpenCabinetDrawerRealmanEnv(BaseEnv):
     def __init__(
         self,
         *args,
-        robot_uids="realman",
+        robot_uids="mobile_realman",
         robot_init_qpos_noise=0.02,
         reconfiguration_freq=None,
         num_envs=1,
@@ -239,7 +239,7 @@ class OpenCabinetDrawerRealmanEnv(BaseEnv):
             # self.cabinet.set_pose(Pose.create_from_pq(p=xy))
 
             # initialize robot
-            if self.robot_uids == "realman":
+            if self.robot_uids == "mobile_realman":
                 qpos = torch.tensor(
                     [
                         0,

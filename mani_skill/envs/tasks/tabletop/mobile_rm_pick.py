@@ -22,11 +22,11 @@ from mani_skill.utils.structs.types import GPUMemoryConfig, SimConfig
 
 
 @register_env(
-    "RMPick-v1",
+    "MobileRMPick-v1",
     max_episode_steps=1000,
     asset_download_ids=["ycb"]
 )
-class RMPickEnv(BaseEnv):
+class MobileRMPickEnv(BaseEnv):
     """
     **Task Description:**
     Pick up a random object sampled from the [YCB dataset](https://www.ycbbenchmarks.com/) and move it to a random goal position
@@ -49,14 +49,14 @@ class RMPickEnv(BaseEnv):
 
     _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/PickSingleYCB-v1_rt.mp4"
 
-    SUPPORTED_ROBOTS = ["realman"]
+    SUPPORTED_ROBOTS = ["mobile_realman"]
     agent: Union[Realman]
     goal_thresh = 0.025
 
     def __init__(
         self,
         *args,
-        robot_uids="realman",
+        robot_uids="mobile_realman",
         robot_init_qpos_noise=0.02,
         num_envs=1,
         reconfiguration_freq=None,

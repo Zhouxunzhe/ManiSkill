@@ -5,8 +5,6 @@ from transforms3d.euler import euler2quat
 from mani_skill.envs.tasks import FoldSuitcaseEnv
 from mani_skill.examples.motionplanning.panda.motionplanner import \
     PandaArmMotionPlanningSolver
-from mani_skill.examples.motionplanning.panda.utils import (
-    compute_grasp_info_by_obb, get_actor_obb, get_articulate_obb)
 
 def solve(env: FoldSuitcaseEnv, seed=None, debug=False, vis=False):
     options = {
