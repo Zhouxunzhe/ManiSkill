@@ -13,16 +13,10 @@ def _load_partnet_mobility_dataset(mode):
     global PARTNET_MOBILITY
     """loads preprocssed partnet mobility metadata"""
     # load suitcase partnet model
-    if mode == "train":
+    if mode == "train" or mode == "eval":
         PARTNET_MOBILITY = {
             "model_data": load_json(
-                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_train.json"
-            ),
-        }
-    elif mode == "eval":
-        PARTNET_MOBILITY = {
-            "model_data": load_json(
-                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_eval.json"
+                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_all.json"
             ),
         }
     else:
