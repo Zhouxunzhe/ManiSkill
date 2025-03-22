@@ -92,12 +92,9 @@ class FoldSuitcaseEnv(BaseEnv):
     max_close_frac = 0.25
     suitcase_half_size = 0.2
 
-    def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, model=None, **kwargs):
+    def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, mode="train", model=None, **kwargs):
         # specifying robot_uids="panda" as the default means gym.make("PushCube-v1") will default to using the panda arm.
-        if "mode" in kwargs.keys():
-            self.mode = kwargs["mode"]  # "train" / "eval"
-        else:
-            self.mode = "train"
+        self.mode = mode
         if self.mode == "train":
             self.JSON = (
                     PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_train.json"

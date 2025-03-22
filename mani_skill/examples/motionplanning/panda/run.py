@@ -39,20 +39,34 @@ def parse_args(args=None):
     parser.add_argument("--shader", default="default", type=str, help="Change shader used for rendering. Default is 'default' which is very fast. Can also be 'rt' for ray tracing and generating photo-realistic renders. Can also be 'rt-fast' for a faster but lower quality ray-traced renderer")
     parser.add_argument("--record-dir", type=str, default="demos", help="where to save the recorded trajectories")
     parser.add_argument("--num-procs", type=int, default=1, help="Number of processes to use to help parallelize the trajectory replay process. This uses CPU multiprocessing and only works with the CPU simulation backend at the moment.")
+    parser.add_argument("--data-mode", type=str, default=None, help="type of datasets, train or eval")
     return parser.parse_args()
 
 def _main(args, proc_id: int = 0, start_seed: int = 0) -> str:
     env_id = args.env_id
-    env = gym.make(
-        env_id,
-        obs_mode=args.obs_mode,
-        control_mode="pd_joint_pos",
-        render_mode=args.render_mode,
-        sensor_configs=dict(shader_pack=args.shader),
-        human_render_camera_configs=dict(shader_pack=args.shader),
-        viewer_camera_configs=dict(shader_pack=args.shader),
-        sim_backend=args.sim_backend
-    )
+    if args.data_mode is not None:
+        env = gym.make(
+            env_id,
+            obs_mode=args.obs_mode,
+            control_mode="pd_joint_pos",
+            render_mode=args.render_mode,
+            sensor_configs=dict(shader_pack=args.shader),
+            human_render_camera_configs=dict(shader_pack=args.shader),
+            viewer_camera_configs=dict(shader_pack=args.shader),
+            sim_backend=args.sim_backend,
+            mode=args.data_mode
+        )
+    else:
+        env = gym.make(
+            env_id,
+            obs_mode=args.obs_mode,
+            control_mode="pd_joint_pos",
+            render_mode=args.render_mode,
+            sensor_configs=dict(shader_pack=args.shader),
+            human_render_camera_configs=dict(shader_pack=args.shader),
+            viewer_camera_configs=dict(shader_pack=args.shader),
+            sim_backend=args.sim_backend
+        )
     if env_id not in MP_SOLUTIONS:
         raise RuntimeError(f"No already written motion planning solutions for {env_id}. Available options are {list(MP_SOLUTIONS.keys())}")
 
