@@ -103,6 +103,18 @@ class FoldSuitcaseEnv(BaseEnv):
             self.JSON = (
                     PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_eval.json"
             )
+        elif self.mode == "box":
+            self.JSON = (
+                    PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_box_train.json"
+            )
+        elif self.mode == "laptop":
+            self.JSON = (
+                    PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_laptop_train.json"
+            )
+        elif self.mode == "suitcase":
+            self.JSON = (
+                    PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_suitcase_train.json"
+            )
         self.robot_init_qpos_noise = robot_init_qpos_noise
         train_data = load_json(self.JSON)
         self.model = model
