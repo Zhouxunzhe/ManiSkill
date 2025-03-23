@@ -3,6 +3,11 @@ python -m mani_skill.examples.motionplanning.panda.run \
   --traj-name "train_fold_all_1k.pd_joint_pos.cpu" -e "FoldSuitcase-v1" -n 1000 \
   --obs-mode rgbd --only-count-success -b cpu --shader rt --num-procs 1 --data-mode train
 
+# Collect laptop only data
+python -m mani_skill.examples.motionplanning.panda.run \
+  --traj-name "train_fold_laptop_1k.pd_joint_pos.cpu" -e "FoldSuitcase-v1" -n 1000 \
+  --obs-mode rgbd --only-count-success -b cpu --shader rt --num-procs 1 --data-mode laptop
+
 # # Replay data to get delta pos
 # python -m mani_skill.trajectory.replay_trajectory \
 #   --traj-path /home/zhouxunzhe/robo_dev/ManiSkill/demos/FoldSuitcase-v1/motionplanning/suitcase_1k.pd_joint_pos.cpu.h5 \
