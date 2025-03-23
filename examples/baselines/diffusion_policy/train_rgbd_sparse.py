@@ -125,9 +125,11 @@ def reorder_keys(d, ref_dict):
 
 
 class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
-    def __init__(self, data_path, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj):
+    def __init__(self, data_path, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj,
+                 sparse_step=10):
         self.include_rgb = include_rgb
         self.include_depth = include_depth
+        self.sparse_step = sparse_step  # 新增稀疏步长参数，默认为10
         from .diffusion_policy.utils import load_demo_dataset
         trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
         # trajectories['observations'] is a list of dict, each dict is a traj, with keys in obs_space, values with length L+1
@@ -196,13 +198,13 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
             pad_before = obs_horizon - 1
             # Pad before the trajectory, so the first action of an episode is in "actions executed"
             # obs_horizon - 1 is the number of "not used actions"
-            pad_after = pred_horizon - obs_horizon
+            pad_after = (self.pred_horizon - 1) * self.sparse_step
             # Pad after the trajectory, so all the observations are utilized in training
             # Note that in the original code, pad_after = act_horizon - 1, but I think this is not the best choice
             self.slices += [
-                (traj_idx, start, start + pred_horizon)
-                for start in range(-pad_before, L - pred_horizon + pad_after)
-            ]  # slice indices follow convention [start, end)
+                (traj_idx, start, start + self.pred_horizon * self.sparse_step)
+                for start in range(-pad_before, L - (self.pred_horizon - 1) * self.sparse_step + 1)
+            ]
 
         print(
             f"Total transitions: {total_transitions}, Total obs sequences: {len(self.slices)}"
@@ -225,18 +227,28 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
                 obs_seq[k] = torch.cat((pad_obs_seq, obs_seq[k]), dim=0)
             # don't need to pad obs after the trajectory, see the above char drawing
 
-        act_seq = self.trajectories["actions"][traj_idx][max(0, start) : end]
-        if start < 0:  # pad before the trajectory
-            act_seq = torch.cat([act_seq[0].repeat(-start, 1), act_seq], dim=0)
-        if end > L:  # pad after the trajectory
-            gripper_action = act_seq[-1, -1]  # assume gripper is with pos controller
-            pad_action = torch.cat((self.pad_action_arm, gripper_action[None]), dim=0)
-            act_seq = torch.cat([act_seq, pad_action.repeat(end - L, 1)], dim=0)
-            # making the robot (arm and gripper) stay still
-        assert (
-            obs_seq["state"].shape[0] == self.obs_horizon
-            and act_seq.shape[0] == self.pred_horizon
-        )
+        # Sparse action sequence
+        act_indices = [max(0, start + i * self.sparse_step) for i in range(self.pred_horizon)]
+        act_seq = []
+        for idx in act_indices:
+            if idx >= L:  # pad after
+                gripper_action = self.trajectories["actions"][traj_idx][-1, -1]
+                pad_action = torch.cat((self.pad_action_arm, gripper_action[None]), dim=0)
+                act_seq.append(pad_action)
+            else:
+                act_seq.append(self.trajectories["actions"][traj_idx][idx])
+        act_seq = torch.stack(act_seq, dim=0)
+
+        if start < 0:  # pad before
+            pad_act = act_seq[0].repeat(abs(start // self.sparse_step) + 1, 1)
+            act_seq = torch.cat([pad_act[-abs(start // self.sparse_step):], act_seq], dim=0)
+
+        # assert (
+        #     obs_seq["state"].shape[0] == self.obs_horizon
+        #     and act_seq.shape[0] == self.pred_horizon
+        # )
+        self.obs_horizon = obs_seq["state"].shape[0]
+        self.pred_horizon = act_seq.shape[0]
         return {
             "observations": obs_seq,
             "actions": act_seq,
@@ -259,6 +271,7 @@ class Agent(nn.Module):
         assert (env.single_action_space.high == 1).all() and (
             env.single_action_space.low == -1
         ).all()
+
         # denoising results will be clipped to [-1,1], so the action should be in [-1,1] as well
         self.act_dim = env.single_action_space.shape[0]
         obs_state_dim = env.single_observation_space["state"].shape[1]
@@ -516,7 +529,8 @@ if __name__ == "__main__":
         include_rgb=include_rgb,
         include_depth=include_depth,
         device=device,
-        num_traj=args.num_demos
+        num_traj=args.num_demos,
+        sparse_step=10  # 设置稀疏步长为10
     )
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
