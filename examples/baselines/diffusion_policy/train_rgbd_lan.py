@@ -27,10 +27,10 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from .diffusion_policy.conditional_unet1d import ConditionalUnet1D
-from .diffusion_policy.evaluate import evaluate
-from .diffusion_policy.make_env import make_eval_envs
-from .diffusion_policy.utils import (IterationBasedBatchSampler,
+from diffusion_policy.conditional_unet1d import ConditionalUnet1D
+from diffusion_policy.evaluate import evaluate
+from diffusion_policy.make_env import make_eval_envs
+from diffusion_policy.utils import (IterationBasedBatchSampler,
                                     build_state_obs_extractor, convert_obs,
                                     worker_init_fn)
 
@@ -110,6 +110,15 @@ class Args:
     Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
     visual_encoder: str = "plain_conv"
     """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
+    lan_encoder: str = "encoder_only"
+    """Language encoder. can be "encoder_only", "tokenizer_only", "encoder_decoder", "tokenizer_decoder", "encoder_ffn", "tokenizer_ffn"""
+    language_condition_type: str = "concat"
+    """How language as condition, can be "concat", "adapter", "sparse_actions"""
+    sparse_horizon: int=100
+    sparse_steps: int=3
+    """Sparse action steps"""
+    prompt: str=""
+    """Prompt for language condition"""
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
 
@@ -126,14 +135,14 @@ def reorder_keys(d, ref_dict):
 
 class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
     def __init__(self, data_path, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj,
-                 sparse_step=10):
+                 use_language=False):
         self.include_rgb = include_rgb
         self.include_depth = include_depth
-        self.sparse_step = sparse_step  # 新增稀疏步长参数，默认为10
-        from .diffusion_policy.utils import load_demo_dataset
+        self.use_language = use_language
+
+        from diffusion_policy.utils import load_demo_dataset
         trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
-        # trajectories['observations'] is a list of dict, each dict is a traj, with keys in obs_space, values with length L+1
-        # trajectories['actions'] is a list of np.ndarray (L, act_dim)
+
         print("Raw trajectory loaded, beginning observation pre-processing...")
 
         # Pre-process the observations, make them align with the obs returned by the obs_wrapper
@@ -157,6 +166,14 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
             obs_traj_dict_list.append(_obs_traj_dict)
         trajectories["observations"] = obs_traj_dict_list
         self.obs_keys = list(_obs_traj_dict.keys())
+
+        # Process language descriptions if available
+        if self.use_language and "language" in trajectories:
+            self.trajectory_language = trajectories["language"]
+        else:
+            # Create empty language placeholders if not available in dataset
+            self.trajectory_language = [args.prompt] * len(trajectories["actions"])
+
         # Pre-process the actions
         for i in range(len(trajectories["actions"])):
             trajectories["actions"][i] = torch.Tensor(trajectories["actions"][i]).to(
@@ -168,10 +185,11 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
 
         # Pre-compute all possible (traj_idx, start, end) tuples, this is very specific to Diffusion Policy
         if (
-            "delta_pos" in args.control_mode
-            or args.control_mode == "base_pd_joint_vel_arm_pd_joint_vel"
+                "delta_pos" in args.control_mode
+                or args.control_mode == "base_pd_joint_vel_arm_pd_joint_vel"
         ):
-            print("Detected a delta controller type, padding with a zero action to ensure the arm stays still after solving tasks.")
+            print(
+                "Detected a delta controller type, padding with a zero action to ensure the arm stays still after solving tasks.")
             self.pad_action_arm = torch.zeros(
                 (trajectories["actions"][0].shape[1] - 1,), device=device
             )
@@ -180,6 +198,7 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
         else:
             # NOTE for absolute joint pos control probably should pad with the final joint position action.
             raise NotImplementedError(f"Control Mode {args.control_mode} not supported")
+
         self.obs_horizon, self.pred_horizon = obs_horizon, pred_horizon = (
             args.obs_horizon,
             args.pred_horizon,
@@ -198,13 +217,13 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
             pad_before = obs_horizon - 1
             # Pad before the trajectory, so the first action of an episode is in "actions executed"
             # obs_horizon - 1 is the number of "not used actions"
-            pad_after = (self.pred_horizon - 1) * self.sparse_step
+            pad_after = pred_horizon - obs_horizon
             # Pad after the trajectory, so all the observations are utilized in training
             # Note that in the original code, pad_after = act_horizon - 1, but I think this is not the best choice
             self.slices += [
-                (traj_idx, start, start + self.pred_horizon * self.sparse_step)
-                for start in range(-pad_before, L - (self.pred_horizon - 1) * self.sparse_step + 1)
-            ]
+                (traj_idx, start, start + pred_horizon)
+                for start in range(-pad_before, L - pred_horizon + pad_after)
+            ]  # slice indices follow convention [start, end)
 
         print(
             f"Total transitions: {total_transitions}, Total obs sequences: {len(self.slices)}"
@@ -220,38 +239,29 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
         obs_seq = {}
         for k, v in obs_traj.items():
             obs_seq[k] = v[
-                max(0, start) : start + self.obs_horizon
-            ]  # start+self.obs_horizon is at least 1
+                         max(0, start): start + self.obs_horizon
+                         ]  # start+self.obs_horizon is at least 1
             if start < 0:  # pad before the trajectory
                 pad_obs_seq = torch.stack([obs_seq[k][0]] * abs(start), dim=0)
                 obs_seq[k] = torch.cat((pad_obs_seq, obs_seq[k]), dim=0)
             # don't need to pad obs after the trajectory, see the above char drawing
 
-        # Sparse action sequence
-        act_indices = [max(0, start + i * self.sparse_step) for i in range(self.pred_horizon)]
-        act_seq = []
-        for idx in act_indices:
-            if idx >= L:  # pad after
-                gripper_action = self.trajectories["actions"][traj_idx][-1, -1]
-                pad_action = torch.cat((self.pad_action_arm, gripper_action[None]), dim=0)
-                act_seq.append(pad_action)
-            else:
-                act_seq.append(self.trajectories["actions"][traj_idx][idx])
-        act_seq = torch.stack(act_seq, dim=0)
-
-        if start < 0:  # pad before
-            pad_act = act_seq[0].repeat(abs(start // self.sparse_step) + 1, 1)
-            act_seq = torch.cat([pad_act[-abs(start // self.sparse_step):], act_seq], dim=0)
-
-        # assert (
-        #     obs_seq["state"].shape[0] == self.obs_horizon
-        #     and act_seq.shape[0] == self.pred_horizon
-        # )
-        self.obs_horizon = obs_seq["state"].shape[0]
-        self.pred_horizon = act_seq.shape[0]
+        act_seq = self.trajectories["actions"][traj_idx][max(0, start): end]
+        if start < 0:  # pad before the trajectory
+            act_seq = torch.cat([act_seq[0].repeat(-start, 1), act_seq], dim=0)
+        if end > L:  # pad after the trajectory
+            gripper_action = act_seq[-1, -1]  # assume gripper is with pos controller
+            pad_action = torch.cat((self.pad_action_arm, gripper_action[None]), dim=0)
+            act_seq = torch.cat([act_seq, pad_action.repeat(end - L, 1)], dim=0)
+            # making the robot (arm and gripper) stay still
+        assert (
+                obs_seq["state"].shape[0] == self.obs_horizon
+                and act_seq.shape[0] == self.pred_horizon
+        )
         return {
             "observations": obs_seq,
             "actions": act_seq,
+            "language": self.trajectory_language[traj_idx]
         }
 
     def __len__(self):
@@ -264,15 +274,22 @@ class Agent(nn.Module):
         self.obs_horizon = args.obs_horizon
         self.act_horizon = args.act_horizon
         self.pred_horizon = args.pred_horizon
+        self.sparse_horizon = args.sparse_horizon if hasattr(args, 'sparse_horizon') else 100
+        self.sparse_steps = args.sparse_steps if hasattr(args, 'sparse_steps') else 3
+
+        # Check if language encoder should be used
+        self.use_language = hasattr(args, 'lan_encoder') and args.lan_encoder != ""
+        self.language_condition_type = args.language_condition_type if hasattr(args,
+                                                                               'language_condition_type') else "concat"
+
         assert (
-            len(env.single_observation_space["state"].shape) == 2
+                len(env.single_observation_space["state"].shape) == 2
         )  # (obs_horizon, obs_dim)
         assert len(env.single_action_space.shape) == 1  # (act_dim, )
         assert (env.single_action_space.high == 1).all() and (
-            env.single_action_space.low == -1
+                env.single_action_space.low == -1
         ).all()
 
-        # denoising results will be clipped to [-1,1], so the action should be in [-1,1] as well
         self.act_dim = env.single_action_space.shape[0]
         obs_state_dim = env.single_observation_space["state"].shape[1]
         total_visual_channels = 0
@@ -285,40 +302,95 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         visual_feature_dim = 256
+        # Visual encoder setup (unchanged)
         if args.visual_encoder == 'plain_conv':
-            from .diffusion_policy.encoders.plain_conv import PlainConv
+            from diffusion_policy.encoders.plain_conv import PlainConv
             self.visual_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
             )
         elif args.visual_encoder == 'clip':
-            from .diffusion_policy.encoders.clip import CLIPEncoder
+            from diffusion_policy.encoders.clip import CLIPEncoder
             self.visual_encoder = CLIPEncoder(
                 out_dim=visual_feature_dim
             )
         elif args.visual_encoder == 'dinov2':
-            from .diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            from diffusion_policy.encoders.dinov2 import DINOv2Encoder
             self.visual_encoder = DINOv2Encoder(
                 out_dim=visual_feature_dim
             )
         elif args.visual_encoder == 'resnet':
-            from .diffusion_policy.encoders.resnet import ResNetEncoder
+            from diffusion_policy.encoders.resnet import ResNetEncoder
             self.visual_encoder = ResNetEncoder(
                 out_dim=visual_feature_dim, pool_feature_map=True
             )
+
+        # Language encoder setup (new)
+        if self.use_language:
+            from diffusion_policy.encoders.lan_encoder import LanguageEncoder
+            language_feature_dim = 256
+            self.language_encoder = LanguageEncoder(args.lan_encoder, output_dim=language_feature_dim)
+
+            # Vision-language adapter
+            if self.language_condition_type == "adapter":
+                self.vision_adapter = nn.Sequential(
+                    nn.Linear(visual_feature_dim, 512),
+                    nn.LayerNorm(512),
+                    nn.ReLU(),
+                    nn.Linear(512, language_feature_dim)
+                )
+
+            # Setup for sparse prediction
+            if self.language_condition_type == "sparse_actions":
+                # Sparse action predictor (for predicting waypoints)
+                self.sparse_action_predictor = ConditionalUnet1D(
+                    input_dim=self.act_dim,
+                    global_cond_dim=self.obs_horizon * (visual_feature_dim + obs_state_dim) + language_feature_dim,
+                    diffusion_step_embed_dim=args.diffusion_step_embed_dim,
+                    down_dims=[args.unet_dims[0] // 2] + args.unet_dims[:-1],  # Smaller network
+                    n_groups=args.n_groups,
+                )
+
+            # Adjust condition dimension based on language condition type
+            if self.language_condition_type == "concat":
+                global_cond_dim = self.obs_horizon * (visual_feature_dim + obs_state_dim) + language_feature_dim
+            elif self.language_condition_type == "adapter":
+                global_cond_dim = self.obs_horizon * (language_feature_dim + obs_state_dim) + language_feature_dim
+            elif self.language_condition_type == "sparse_actions":
+                global_cond_dim = self.obs_horizon * (
+                            visual_feature_dim + obs_state_dim) + self.sparse_steps * self.act_dim
+            else:
+                # Vision-only case
+                global_cond_dim = self.obs_horizon * (visual_feature_dim + obs_state_dim)
+        else:
+            # Original condition dimension (vision only)
+            global_cond_dim = self.obs_horizon * (visual_feature_dim + obs_state_dim)
+
+        # Main diffusion model
         self.noise_pred_net = ConditionalUnet1D(
-            input_dim=self.act_dim,  # act_horizon is not used (U-Net doesn't care)
-            global_cond_dim=self.obs_horizon * (visual_feature_dim + obs_state_dim),
+            input_dim=self.act_dim,
+            global_cond_dim=global_cond_dim,
             diffusion_step_embed_dim=args.diffusion_step_embed_dim,
             down_dims=args.unet_dims,
             n_groups=args.n_groups,
         )
+
+        # Diffusion setup
         self.num_diffusion_iters = 100
         self.noise_scheduler = DDPMScheduler(
             num_train_timesteps=self.num_diffusion_iters,
-            beta_schedule="squaredcos_cap_v2",  # has big impact on performance, try not to change
-            clip_sample=True,  # clip output to [-1,1] to improve stability
-            prediction_type="epsilon",  # predict noise (instead of denoised action)
+            beta_schedule="squaredcos_cap_v2",
+            clip_sample=True,
+            prediction_type="epsilon",
         )
+
+        # Sparse diffusion setup (if using language)
+        if self.use_language and self.language_condition_type == "sparse_actions":
+            self.sparse_noise_scheduler = DDPMScheduler(
+                num_train_timesteps=self.num_diffusion_iters,
+                beta_schedule="squaredcos_cap_v2",
+                clip_sample=True,
+                prediction_type="epsilon",
+            )
 
     def encode_obs(self, obs_seq, eval_mode):
         if self.include_rgb:
@@ -329,89 +401,258 @@ class Agent(nn.Module):
             img_seq = depth
         if self.include_rgb and self.include_depth:
             img_seq = torch.cat([rgb, depth], dim=2)  # (B, obs_horizon, C, H, W), C=4*k
+
         batch_size = img_seq.shape[0]
         img_seq = img_seq.flatten(end_dim=1)  # (B*obs_horizon, C, H, W)
+
         if hasattr(self, "aug") and not eval_mode:
             img_seq = self.aug(img_seq)  # (B*obs_horizon, C, H, W)
+
         visual_feature = self.visual_encoder(img_seq)  # (B*obs_horizon, D)
         visual_feature = visual_feature.reshape(
             batch_size, self.obs_horizon, visual_feature.shape[1]
         )  # (B, obs_horizon, D)
+
         feature = torch.cat(
             (visual_feature, obs_seq["state"]), dim=-1
         )  # (B, obs_horizon, D+obs_state_dim)
-        return feature.flatten(start_dim=1)  # (B, obs_horizon * (D+obs_state_dim))
 
-    def compute_loss(self, obs_seq, action_seq):
+        return visual_feature, feature.flatten(start_dim=1)  # Return both visual features and combined features
+
+    def encode_language(self, text_instructions):
+        """Encode language instructions"""
+        if not self.use_language:
+            return None
+        return self.language_encoder(text_instructions)  # (B, language_feature_dim)
+
+    def predict_sparse_actions(self, obs_seq, language_feature, eval_mode=False):
+        """Predict sparse waypoint actions using language and vision"""
         B = obs_seq["state"].shape[0]
 
-        # observation as FiLM conditioning
-        obs_cond = self.encode_obs(
-            obs_seq, eval_mode=False
-        )  # (B, obs_horizon * obs_dim)
+        # Get visual features
+        visual_features, obs_cond = self.encode_obs(obs_seq, eval_mode=eval_mode)
 
-        # sample noise to add to actions
-        noise = torch.randn((B, self.pred_horizon, self.act_dim), device=device)
+        # Combine with language features
+        combined_cond = torch.cat([obs_cond, language_feature], dim=1)
 
-        # sample a diffusion iteration for each data point
+        # Initialize from noise
+        noisy_sparse_actions = torch.randn(
+            (B, self.sparse_steps, self.act_dim), device=obs_seq["state"].device
+        )
+
+        # Run diffusion process
+        if eval_mode:
+            with torch.no_grad():
+                for k in self.sparse_noise_scheduler.timesteps:
+                    # Predict noise
+                    noise_pred = self.sparse_action_predictor(
+                        sample=noisy_sparse_actions,
+                        timestep=k,
+                        global_cond=combined_cond,
+                    )
+
+                    # Inverse diffusion step
+                    noisy_sparse_actions = self.sparse_noise_scheduler.step(
+                        model_output=noise_pred,
+                        timestep=k,
+                        sample=noisy_sparse_actions,
+                    ).prev_sample
+        else:
+            # For training, just return the noisy actions (will be denoised during loss computation)
+            pass
+
+        return noisy_sparse_actions
+
+    def compute_loss(self, obs_seq, action_seq, text_instructions=None):
+        B = obs_seq["state"].shape[0]
+
+        # Get visual features and observation conditioning
+        visual_features, obs_cond = self.encode_obs(obs_seq, eval_mode=False)
+
+        # Handle language condition if available
+        if text_instructions is None:
+            text_instructions = [args.prompt] * len(action_seq)
+        if self.use_language and text_instructions is not None:
+            language_feature = self.encode_language(text_instructions)
+
+            if self.language_condition_type == "concat":
+                # Simple concatenation of features
+                obs_cond = torch.cat([obs_cond, language_feature], dim=1)
+
+            elif self.language_condition_type == "adapter":
+                # Adapt visual features to language space
+                batch_size = visual_features.shape[0]
+                adapted_visual = self.vision_adapter(visual_features.reshape(-1, visual_features.shape[-1]))
+                adapted_visual = adapted_visual.reshape(batch_size, self.obs_horizon, -1)
+
+                # Create new observation condition with adapted features
+                adapted_obs_cond = torch.cat(
+                    (adapted_visual, obs_seq["state"]), dim=-1
+                ).flatten(start_dim=1)
+
+                # Combine with language feature
+                obs_cond = torch.cat([adapted_obs_cond, language_feature], dim=1)
+
+            elif self.language_condition_type == "sparse_actions":
+                # First, compute loss for sparse action prediction
+                sparse_loss = 0.0
+
+                # Sample sparse waypoints from the full action sequence
+                sparse_indices = torch.linspace(
+                    self.obs_horizon,
+                    self.pred_horizon - 1,
+                    steps=self.sparse_steps,
+                    dtype=torch.long,
+                    device=action_seq.device
+                )
+                sparse_target_actions = action_seq[:, sparse_indices]
+
+                # Sample noise for sparse actions
+                sparse_noise = torch.randn_like(sparse_target_actions)
+                sparse_timesteps = torch.randint(
+                    0, self.noise_scheduler.config.num_train_timesteps, (B,), device=action_seq.device
+                ).long()
+
+                # Add noise to sparse actions
+                noisy_sparse_actions = self.sparse_noise_scheduler.add_noise(
+                    sparse_target_actions, sparse_noise, sparse_timesteps
+                )
+
+                # Get condition for sparse action prediction
+                noisy_sparse_actions_padded = F.pad(noisy_sparse_actions, (0, 0, 0, 1), mode='replicate')  # [B, 3, 8] -> [B, 4, 8]
+                sparse_cond = torch.cat([obs_cond, language_feature], dim=1)
+
+                # Predict noise for sparse actions
+                sparse_noise_pred = self.sparse_action_predictor(
+                    noisy_sparse_actions_padded, sparse_timesteps, global_cond=sparse_cond
+                )
+                sparse_noise_pred = sparse_noise_pred[:, :3, :]
+
+                # Compute sparse prediction loss
+                sparse_loss = F.mse_loss(sparse_noise_pred, sparse_noise)
+
+                # Now use predicted sparse actions as condition for dense action prediction
+                # For training, we use teacher forcing (ground truth sparse actions)
+                obs_cond = torch.cat([obs_cond, sparse_target_actions.flatten(start_dim=1)], dim=1)
+
+        # Sample noise to add to actions
+        noise = torch.randn((B, self.pred_horizon, self.act_dim), device=action_seq.device)
+
+        # Sample diffusion timesteps
         timesteps = torch.randint(
-            0, self.noise_scheduler.config.num_train_timesteps, (B,), device=device
+            0, self.noise_scheduler.config.num_train_timesteps, (B,), device=action_seq.device
         ).long()
 
-        # add noise to the clean images(actions) according to the noise magnitude at each diffusion iteration
-        # (this is the forward diffusion process)
+        # Add noise to actions
         noisy_action_seq = self.noise_scheduler.add_noise(action_seq, noise, timesteps)
 
-        # predict the noise residual
+        # Predict noise
         noise_pred = self.noise_pred_net(
             noisy_action_seq, timesteps, global_cond=obs_cond
         )
 
-        return F.mse_loss(noise_pred, noise)
+        # Compute main diffusion loss
+        diffusion_loss = F.mse_loss(noise_pred, noise)
 
-    def get_action(self, obs_seq):
-        # init scheduler
-        # self.noise_scheduler.set_timesteps(self.num_diffusion_iters)
-        # set_timesteps will change noise_scheduler.timesteps is only used in noise_scheduler.step()
-        # noise_scheduler.step() is only called during inference
-        # if we use DDPM, and inference_diffusion_steps == train_diffusion_steps, then we can skip this
+        # Return combined loss if using sparse actions, otherwise just diffusion loss
+        if self.use_language and self.language_condition_type == "sparse_actions":
+            return diffusion_loss + sparse_loss
+        else:
+            return diffusion_loss
 
-        # obs_seq['state']: (B, obs_horizon, obs_state_dim)
+    def get_action(self, obs_seq, text_instructions=None):
         B = obs_seq["state"].shape[0]
+
         with torch.no_grad():
+            # Prepare image sequences
             if self.include_rgb:
                 obs_seq["rgb"] = obs_seq["rgb"].permute(0, 1, 4, 2, 3)
             if self.include_depth:
                 obs_seq["depth"] = obs_seq["depth"].permute(0, 1, 4, 2, 3)
 
-            obs_cond = self.encode_obs(
-                obs_seq, eval_mode=True
-            )  # (B, obs_horizon * obs_dim)
+            # Get visual features and observation conditioning
+            visual_features, obs_cond = self.encode_obs(obs_seq, eval_mode=True)
 
-            # initialize action from Guassian noise
+            # Handle language condition if available
+            if text_instructions is None:
+                text_instructions = [args.prompt] * len(obs_seq['rgb'])
+            if self.use_language and text_instructions is not None:
+                language_feature = self.encode_language(text_instructions)
+
+                if self.language_condition_type == "concat":
+                    # Simple concatenation of features
+                    obs_cond = torch.cat([obs_cond, language_feature], dim=1)
+
+                elif self.language_condition_type == "adapter":
+                    # Adapt visual features to language space
+                    batch_size = visual_features.shape[0]
+                    adapted_visual = self.vision_adapter(visual_features.reshape(-1, visual_features.shape[-1]))
+                    adapted_visual = adapted_visual.reshape(batch_size, self.obs_horizon, -1)
+
+                    # Create new observation condition with adapted features
+                    adapted_obs_cond = torch.cat(
+                        (adapted_visual, obs_seq["state"]), dim=-1
+                    ).flatten(start_dim=1)
+
+                    # Combine with language feature
+                    obs_cond = torch.cat([adapted_obs_cond, language_feature], dim=1)
+
+                elif self.language_condition_type == "sparse_actions":
+                    # First predict sparse waypoint actions using language + vision
+                    sparse_cond = torch.cat([obs_cond, language_feature], dim=1)
+
+                    # Initialize sparse actions from noise
+                    noisy_sparse_actions = torch.randn(
+                        (B, self.sparse_steps, self.act_dim), device=obs_seq["state"].device
+                    )
+
+                    # Run sparse diffusion process
+                    noisy_sparse_actions_padded = F.pad(noisy_sparse_actions, (0, 0, 0, 1), mode='replicate')
+                    for k in self.sparse_noise_scheduler.timesteps:
+                        # Predict noise
+                        noise_pred = self.sparse_action_predictor(
+                            sample=noisy_sparse_actions,
+                            timestep=k,
+                            global_cond=sparse_cond,
+                        )
+
+                        # Inverse diffusion step
+                        noisy_sparse_actions_padded = self.sparse_noise_scheduler.step(
+                            model_output=noise_pred,
+                            timestep=k,
+                            sample=noisy_sparse_actions_padded,
+                        ).prev_sample
+
+                    # Use predicted sparse actions as condition for dense action prediction
+                    noisy_sparse_actions = noisy_sparse_actions_padded[:, :3, :]
+                    obs_cond = torch.cat([obs_cond, noisy_sparse_actions.flatten(start_dim=1)], dim=1)
+
+            # Initialize dense action sequence from noise
             noisy_action_seq = torch.randn(
                 (B, self.pred_horizon, self.act_dim), device=obs_seq["state"].device
             )
 
+            # Run diffusion process
             for k in self.noise_scheduler.timesteps:
-                # predict noise
+                # Predict noise
+                # RuntimeError: mat1 and mat2 shapes cannot be multiplied (256x626 and 882x128)
                 noise_pred = self.noise_pred_net(
                     sample=noisy_action_seq,
                     timestep=k,
                     global_cond=obs_cond,
                 )
 
-                # inverse diffusion step (remove noise)
+                # Inverse diffusion step
                 noisy_action_seq = self.noise_scheduler.step(
                     model_output=noise_pred,
                     timestep=k,
                     sample=noisy_action_seq,
                 ).prev_sample
 
-        # only take act_horizon number of actions
-        start = self.obs_horizon - 1
-        end = start + self.act_horizon
-        return noisy_action_seq[:, start:end]  # (B, act_horizon, act_dim)
+            # Only take act_horizon number of actions
+            start = self.obs_horizon - 1
+            end = start + self.act_horizon
+            return noisy_action_seq[:, start:end]  # (B, act_horizon, act_dim)
 
 
 def save_ckpt(run_name, tag):
@@ -458,7 +699,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # create evaluation environment
     env_kwargs = dict(
@@ -530,7 +771,7 @@ if __name__ == "__main__":
         include_depth=include_depth,
         device=device,
         num_traj=args.num_demos,
-        sparse_step=10  # 设置稀疏步长为10
+        use_language=True,
     )
     sampler = RandomSampler(dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
@@ -613,6 +854,7 @@ if __name__ == "__main__":
         total_loss = agent.compute_loss(
             obs_seq=data_batch["observations"],  # obs_batch_dict['state'] is (B, L, obs_dim)
             action_seq=data_batch["actions"],  # (B, L, act_dim)
+            text_instructions=data_batch["language"]
         )
         timings["forward"] += time.time() - last_tick
 

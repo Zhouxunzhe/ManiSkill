@@ -1,7 +1,11 @@
 # # Motion planning to collect pd_joint_pos data
 python -m mani_skill.examples.motionplanning.panda.run \
-  --traj-name "train_fold_all_1k.pd_joint_pos.cpu" -e "FoldSuitcase-v1" -n 1000 \
+  --traj-name "train_fold_all_500.rgbd.pd_joint_pos.cpu" -e "FoldSuitcase-v1" -n 500 \
   --obs-mode rgbd --only-count-success -b cpu --shader rt --num-procs 1 --data-mode train
+
+python -m mani_skill.examples.motionplanning.panda.run \
+  --traj-name "train_fold_all_500.rgb.pd_joint_pos.cpu" -e "FoldSuitcase-v1" -n 500 \
+  --obs-mode rgb --only-count-success -b cpu --shader rt --num-procs 1 --data-mode train
 
 # Collect laptop only data
 python -m mani_skill.examples.motionplanning.panda.run \
@@ -20,8 +24,12 @@ python -m mani_skill.examples.motionplanning.panda.run \
 
 # # Replay data to get delta pos
 python -m mani_skill.trajectory.replay_trajectory \
-  --traj-path /home/engram/zhouxunzhe/ManiSkill/demos/FoldSuitcase-v1/motionplanning/train_fold_all_1k.pd_joint_pos.cpu.h5 \
+  --traj-path /home/engram/zhouxunzhe/ManiSkill/demos/FoldSuitcase-v1/motionplanning/train_fold_all_500.rgbd.pd_joint_pos.cpu.h5 \
   --use-first-env-state -c pd_joint_delta_pos -o rgbd   --save-traj
+
+python -m mani_skill.trajectory.replay_trajectory \
+  --traj-path /home/engram/zhouxunzhe/ManiSkill/demos/FoldSuitcase-v1/motionplanning/train_fold_all_500.rgb.pd_joint_pos.cpu.h5 \
+  --use-first-env-state -c pd_joint_delta_pos -o rgb   --save-traj
 
 python -m mani_skill.trajectory.replay_trajectory \
   --traj-path /home/engram/zhouxunzhe/ManiSkill/demos/FoldSuitcase-v1/motionplanning/train_fold_laptop_1k.pd_joint_pos.cpu.h5 \
@@ -38,3 +46,18 @@ python -m examples.baselines.diffusion_policy.train_rgbd --env-id FoldSuitcase-v
   --control-mode "pd_joint_delta_pos" --shader rt --num-demos 200 --max_episode_steps 500 --total_iters 50000 --batch_size 256 \
   --log_freq 1000 --eval_freq 3000 --save_freq 1000 --num_eval_episodes 100 --num_eval_envs 1 --visual_encoder plain_conv \
   --obs_mode rgb+depth --exp_name Fold-all-CNN-200
+
+# Train diffusion policy with language condition
+python -m examples.baselines.diffusion_policy.train_rgbd_lan --env-id "FoldSuitcase-v1" \
+  --demo-path "/home/engram/zhouxunzhe/ManiSkill/demos/FoldSuitcase-v1/motionplanning/train_fold_all_500.rgbd.pd_joint_delta_pos.physx_cpu.h5" \
+  --control-mode "pd_joint_delta_pos" --shader rt --num-demos 100 --max_episode_steps 500 --total_iters 3000 --batch_size 256 \
+  --log_freq 1000 --eval_freq 3000 --save_freq 1000 --num_eval_episodes 10 --num_eval_envs 1 --visual_encoder "plain_conv" \
+  --obs_mode "rgb+depth" --lan_encoder "encoder_only" --language_condition_type "concat" --sparse_horizon 100 --sparse_steps 3 \
+  --exp_name "Fold-all-CNN-encoder_only-100" --prompt "Fold laptop, box, suitcase"
+
+python -m examples.baselines.diffusion_policy.train_rgbd_lan --env-id "FoldSuitcase-v1" \
+  --demo-path "/home/engram/zhouxunzhe/ManiSkill/demos/FoldSuitcase-v1/motionplanning/train_fold_all_500.rgbd.pd_joint_delta_pos.physx_cpu.h5" \
+  --control-mode "pd_joint_delta_pos" --shader rt --num-demos 100 --max_episode_steps 500 --total_iters 3000 --batch_size 256 \
+  --log_freq 1000 --eval_freq 3000 --save_freq 1000 --num_eval_episodes 10 --num_eval_envs 1 --visual_encoder "plain_conv" \
+  --obs_mode "rgb+depth" --lan_encoder "encoder_only" --language_condition_type "adapter" --sparse_horizon 100 --sparse_steps 3 \
+  --exp_name "Fold-all-CNN-encoder_only-adapter-100" --prompt "Fold laptop, box, suitcase"
