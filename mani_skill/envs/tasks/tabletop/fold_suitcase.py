@@ -91,6 +91,7 @@ class FoldSuitcaseEnv(BaseEnv):
     # set some commonly used values
     max_close_frac = 0.25
     suitcase_half_size = 0.2
+    random_thresh = 0.02
 
     def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, mode="train", model=None, **kwargs):
         # specifying robot_uids="panda" as the default means gym.make("PushCube-v1") will default to using the panda arm.
@@ -273,12 +274,12 @@ class FoldSuitcaseEnv(BaseEnv):
             # random new base pose
             # TODO(zxz): set new_base here
             new_base = suitcase_builder.initial_pose = sapien.Pose(
-                p=[-0.2 + np.random.uniform(-1, 1) * 0.1,
-                   -0.1 + np.random.uniform(-1, 1) * 0.1,
-                   self.suitcase_half_size + np.random.uniform(-1, 1) * 0.1],
-                q=euler2quat(np.pi / 2 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             np.pi / 2 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             0.0 + np.random.uniform(-1, 1) * 0.1 * np.pi)
+                p=[-0.2 + np.random.uniform(-1, 1) * self.random_thresh,
+                   -0.1 + np.random.uniform(-1, 1) * self.random_thresh,
+                   self.suitcase_half_size + np.random.uniform(-1, 1) * self.random_thresh],
+                q=euler2quat(np.pi / 2 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             np.pi / 2 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             0.0 + np.random.uniform(-1, 1) * self.random_thresh * np.pi)
             )
             suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
@@ -421,12 +422,12 @@ class FoldSuitcaseEnv(BaseEnv):
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
             # random new base pose
             new_base = suitcase_builder.initial_pose = sapien.Pose(
-                p=[-0.1 + np.random.uniform(-1, 1) * 0.1,
-                   -0.0 + np.random.uniform(-1, 1) * 0.1,
-                   -0. + self.suitcase_half_size + np.random.uniform(-1, 1) * 0.1],
-                q=euler2quat(0 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             0 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             np.pi / 2 + np.random.uniform(-1, 1) * 0.1 * np.pi)
+                p=[-0.1 + np.random.uniform(-1, 1) * self.random_thresh,
+                   -0.0 + np.random.uniform(-1, 1) * self.random_thresh,
+                   -0. + self.suitcase_half_size + np.random.uniform(-1, 1) * self.random_thresh],
+                q=euler2quat(0 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             0 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             np.pi / 2 + np.random.uniform(-1, 1) * self.random_thresh * np.pi)
             )
             suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
             self.remove_from_state_dict_registry(suitcase)
@@ -690,12 +691,12 @@ class FoldSuitcaseEnv(BaseEnv):
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
             # random new base pose
             new_base = sapien.Pose(
-                p=[-0.1 + np.random.uniform(-1, 1) * 0.1,
-                   0 + np.random.uniform(-1, 1) * 0.1,
-                   self.suitcase_half_size + np.random.uniform(-1, 1) * 0.1],
-                q=euler2quat(0 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             0 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             np.pi / 2 + np.random.uniform(-1, 1) * 0.1 * np.pi)
+                p=[-0.1 + np.random.uniform(-1, 1) * self.random_thresh,
+                   0 + np.random.uniform(-1, 1) * self.random_thresh,
+                   self.suitcase_half_size + np.random.uniform(-1, 1) * self.random_thresh],
+                q=euler2quat(0 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             0 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             np.pi / 2 + np.random.uniform(-1, 1) * self.random_thresh * np.pi)
             )
             suitcase_builder.initial_pose = new_base
             suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
@@ -839,12 +840,12 @@ class FoldSuitcaseEnv(BaseEnv):
             suitcase_builder.set_scene_idxs(scene_idxs=[i])
             # random new base pose
             new_base = sapien.Pose(
-                p=[-0.1 + np.random.uniform(-1, 1) * 0.1,
-                   -0. + np.random.uniform(-1, 1) * 0.1,
-                   self.suitcase_half_size/2 + np.random.uniform(-1, 1) * 0.1],
-                q=euler2quat(0 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             0 + np.random.uniform(-1, 1) * 0.1 * np.pi,
-                             np.pi / 2 + np.random.uniform(-1, 1) * 0.1 * np.pi)
+                p=[-0.1 + np.random.uniform(-1, 1) * self.random_thresh,
+                   -0. + np.random.uniform(-1, 1) * self.random_thresh,
+                   self.suitcase_half_size/2 + np.random.uniform(-1, 1) * self.random_thresh],
+                q=euler2quat(0 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             0 + np.random.uniform(-1, 1) * self.random_thresh * np.pi,
+                             np.pi / 2 + np.random.uniform(-1, 1) * self.random_thresh * np.pi)
             )
             suitcase_builder.initial_pose = new_base
             suitcase = suitcase_builder.build(name=f"{model_id}-{i}")
