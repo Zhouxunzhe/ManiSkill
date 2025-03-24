@@ -1,14 +1,12 @@
-from typing import Any, Dict, List, Union
-
 import numpy as np
 import sapien
 import torch
 
+from mani_skill.agents.multi_agent import MultiAgent
+from typing import Any, Dict, List, Union, Tuple
+
 from mani_skill import ASSET_DIR
-from mani_skill.agents.robots.fetch.fetch import Fetch
 from mani_skill.agents.robots.panda.panda import Panda
-from mani_skill.agents.robots.panda.panda_wristcam import PandaWristCam
-from mani_skill.agents.robots.xmate3.xmate3 import Xmate3Robotiq
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.envs.utils.randomization.pose import random_quaternions
 from mani_skill.sensors.camera import CameraConfig
@@ -21,46 +19,40 @@ from mani_skill.utils.structs.actor import Actor
 from mani_skill.utils.structs.pose import Pose
 from mani_skill.utils.structs.types import GPUMemoryConfig, SimConfig
 
-WARNED_ONCE = False
 
-
-@register_env("PickCubeYCB-v1", max_episode_steps=50, asset_download_ids=["ycb"])
-class PickCubeYCBEnv(BaseEnv):
+@register_env("TwoRobotPickCubeYCB-v1", max_episode_steps=100)
+class TwoRobotPickCubeYCBEnv(BaseEnv):
     """
     **Task Description:**
-    Pick up a random object sampled from the [YCB dataset](https://www.ycbbenchmarks.com/) and move it to a random goal position
+    The goal is to pick up a red cube and lift it to a goal location. There are two robots in this task and the
+    goal location is out of reach of the left robot while the cube is out of reach of the right robot, thus the two robots must work together
+    to move the cube to the goal.
 
     **Randomizations:**
-    - the object's xy position is randomized on top of a table in the region [0.1, 0.1] x [-0.1, -0.1]. It is placed flat on the table
-    - the object's z-axis rotation is randomized
-    - the object geometry is randomized by randomly sampling any YCB object. (during reconfiguration)
+    - cube has its z-axis rotation randomized
+    - cube has its xy positions on top of the table scene randomized such that it is in within reach of the left robot but not the right.
+    - the target goal position (marked by a green sphere) of the cube is randomized such that it is within reach of the right robot but not the left.
+
 
     **Success Conditions:**
-    - the object position is within goal_thresh (default 0.025) euclidean distance of the goal position
-    - the robot is static (q velocity < 0.2)
-
-    **Goal Specification:**
-    - 3D goal position (also visualized in human renders)
-
-    **Additional Notes**
-    - On GPU simulation, in order to collect data from every possible object in the YCB database we recommend using at least 128 parallel environments or more, otherwise you will need to reconfigure in order to sample new objects.
+    - red cube is at the goal location
     """
 
-    _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/PickSingleYCB-v1_rt.mp4"
+    _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/refs/heads/main/figures/environment_demos/TwoRobotPickCube-v1_rt.mp4"
 
-    SUPPORTED_ROBOTS = ["panda", "panda_wristcam", "fetch"]
-    agent: Union[Panda, PandaWristCam, Fetch]
+    SUPPORTED_ROBOTS = [("panda_wristcam", "panda_wristcam")]
+    agent: MultiAgent[Tuple[Panda, Panda]]
     cube_half_size = 0.02
-    goal_thresh = 0.2
+    goal_thresh = 0.025
 
     def __init__(
         self,
         *args,
-        robot_uids="panda_wristcam",
+        robot_uids=("panda_wristcam", "panda_wristcam"),
         robot_init_qpos_noise=0.02,
         num_envs=1,
         reconfiguration_freq=None,
-        **kwargs,
+        **kwargs
     ):
         self.robot_init_qpos_noise = robot_init_qpos_noise
         self.model_id = None
@@ -68,15 +60,15 @@ class PickCubeYCBEnv(BaseEnv):
             [
                 k
                 for k in load_json(
-                    ASSET_DIR / "assets/mani_skill2_ycb/info_pick_v0.json"
-                ).keys()
+                ASSET_DIR / "assets/mani_skill2_ycb/info_pick_v0.json"
+            ).keys()
                 if k
-                not in [
-                    "022_windex_bottle",
-                    "028_skillet_lid",
-                    "029_plate",
-                    "059_chain",
-                ]  # NOTE (arth): ignore these non-graspable/hard to grasp ycb objects
+                   not in [
+                       "022_windex_bottle",
+                       "028_skillet_lid",
+                       "029_plate",
+                       "059_chain",
+                   ]  # NOTE (arth): ignore these non-graspable/hard to grasp ycb objects
             ]
         )
         self.all_model_ids = np.array(["029_plate"])
@@ -98,22 +90,26 @@ class PickCubeYCBEnv(BaseEnv):
     def _default_sim_config(self):
         return SimConfig(
             gpu_memory_config=GPUMemoryConfig(
-                max_rigid_contact_count=2**20, max_rigid_patch_count=2**19
+                found_lost_pairs_capacity=2**25,
+                max_rigid_patch_count=2**19,
+                max_rigid_contact_count=2**21,
             )
         )
 
     @property
     def _default_sensor_configs(self):
-        pose = sapien_utils.look_at(eye=[0.3, 0, 0.6], target=[-0.1, 0, 0.1])
+        pose = sapien_utils.look_at([1.0, 0, 0.75], [0.0, 0.0, 0.25])
         return [CameraConfig("base_camera", pose, 128, 128, np.pi / 2, 0.01, 100)]
 
     @property
     def _default_human_render_camera_configs(self):
-        pose = sapien_utils.look_at([0.6, 0.7, 0.6], [0.0, 0.0, 0.35])
+        pose = sapien_utils.look_at([1.4, 0.8, 0.75], [0.0, 0.1, 0.1])
         return CameraConfig("render_camera", pose, 512, 512, 1, 0.01, 100)
 
     def _load_agent(self, options: dict):
-        super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
+        super()._load_agent(
+            options, [sapien.Pose(p=[0, -1, 0]), sapien.Pose(p=[0, 1, 0])]
+        )
 
     def _load_scene(self, options: dict):
         global WARNED_ONCE
@@ -126,10 +122,10 @@ class PickCubeYCBEnv(BaseEnv):
         # then sub-scene i will load model model_ids[i % number_of_ycb_objects]
         model_ids = self._batched_episode_rng.choice(self.all_model_ids, replace=True)
         if (
-            self.num_envs > 1
-            and self.num_envs < len(self.all_model_ids)
-            and self.reconfiguration_freq <= 0
-            and not WARNED_ONCE
+                self.num_envs > 1
+                and self.num_envs < len(self.all_model_ids)
+                and self.reconfiguration_freq <= 0
+                and not WARNED_ONCE
         ):
             WARNED_ONCE = True
             print(
@@ -160,14 +156,6 @@ class PickCubeYCBEnv(BaseEnv):
         self.obj = Actor.merge(self._objs, name="ycb_object")
         self.add_to_state_dict_registry(self.obj)
 
-    def _after_reconfigure(self, options: dict):
-        self.object_zs = []
-        for obj in self._objs:
-            collision_mesh = obj.get_first_collision_mesh()
-            # this value is used to set object pose so the bottom is at z=0
-            self.object_zs.append(-collision_mesh.bounding_box.bounds[0, 2])
-        self.object_zs = common.to_tensor(self.object_zs, device=self.device)
-
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         with torch.device(self.device):
             b = len(env_idx)
@@ -187,61 +175,55 @@ class PickCubeYCBEnv(BaseEnv):
             goal_xyz[:, :2] = torch.rand((b, 2)) * 0.2 - 0.1
             goal_xyz[:, 2] = torch.rand((b)) * 0.3 + xyz[:, 2]
 
-            # Initialize robot arm to a higher position above the table than the default typically used for other table top tasks
-            if self.robot_uids == "panda" or self.robot_uids == "panda_wristcam":
-                # fmt: off
-                qpos = np.array(
-                    [0.0, 0, 0, -np.pi * 2 / 3, 0, np.pi * 2 / 3, np.pi / 4, 0.04, 0.04]
-                )
-                # fmt: on
-                qpos[:-2] += self._episode_rng.normal(
-                    0, self.robot_init_qpos_noise, len(qpos) - 2
-                )
-                self.agent.reset(qpos)
-                self.agent.robot.set_root_pose(sapien.Pose([-0.615, 0, 0]))
-            elif self.robot_uids == "xmate3_robotiq":
-                qpos = np.array([0, 0.6, 0, 1.3, 0, 1.3, -1.57, 0, 0])
-                qpos[:-2] += self._episode_rng.normal(
-                    0, self.robot_init_qpos_noise, len(qpos) - 2
-                )
-                self.agent.reset(qpos)
-                self.agent.robot.set_root_pose(sapien.Pose([-0.562, 0, 0]))
-            else:
-                raise NotImplementedError(self.robot_uids)
+    def _after_reconfigure(self, options: dict):
+        self.object_zs = []
+        for obj in self._objs:
+            collision_mesh = obj.get_first_collision_mesh()
+            # this value is used to set object pose so the bottom is at z=0
+            self.object_zs.append(-collision_mesh.bounding_box.bounds[0, 2])
+        self.object_zs = common.to_tensor(self.object_zs, device=self.device)
+
+    @property
+    def left_agent(self) -> Panda:
+        return self.agent.agents[0]
+
+    @property
+    def right_agent(self) -> Panda:
+        return self.agent.agents[1]
 
     def evaluate(self):
         obj_to_goal_pos = self.cube.pose.p - self.obj.pose.p
         is_obj_placed = torch.linalg.norm(obj_to_goal_pos, axis=1) <= self.goal_thresh
-        is_grasped = self.agent.is_grasping(self.obj)
-        is_robot_static = self.agent.is_static(0.2)
+        is_grasped = self.left_agent.is_grasping(self.obj)
+        is_robot_static = self.left_agent.is_static(0.2)
         return dict(
             is_grasped=is_grasped,
             obj_to_goal_pos=obj_to_goal_pos,
             is_obj_placed=is_obj_placed,
             is_robot_static=is_robot_static,
-            is_grasping=self.agent.is_grasping(self.obj),
+            is_grasping=self.left_agent.is_grasping(self.obj),
             success=torch.logical_and(is_obj_placed, is_robot_static),
         )
 
     def _get_obs_extra(self, info: Dict):
         obs = dict(
-            tcp_pose=self.agent.tcp.pose.raw_pose,
+            tcp_pose=self.left_agent.tcp.pose.raw_pose,
             goal_pos=self.obj.pose.p,
             is_grasped=info["is_grasped"],
         )
         if "state" in self.obs_mode:
             obs.update(
                 obj_pose=self.obj.pose.raw_pose,
-                tcp_to_obj_pos=self.obj.pose.p - self.agent.tcp.pose.p,
+                tcp_to_obj_pos=self.obj.pose.p - self.left_agent.tcp.pose.p,
                 cube_pose=self.cube.pose.raw_pose,
-                tcp_to_cube_pos=self.cube.pose.p - self.agent.tcp.pose.p,
+                tcp_to_cube_pos=self.cube.pose.p - self.left_agent.tcp.pose.p,
                 cube_to_goal_pos=self.obj.pose.p - self.cube.pose.p,
             )
         return obs
 
     def compute_dense_reward(self, obs: Any, action: torch.Tensor, info: Dict):
         tcp_to_cube_dist = torch.linalg.norm(
-            self.cube.pose.p - self.agent.tcp.pose.p, axis=1
+            self.cube.pose.p - self.left_agent.tcp.pose.p, axis=1
         )
         reaching_reward = 1 - torch.tanh(5 * tcp_to_cube_dist)
         reward = reaching_reward
@@ -258,7 +240,7 @@ class PickCubeYCBEnv(BaseEnv):
         reward += info["is_obj_placed"] * is_grasped
 
         static_reward = 1 - torch.tanh(
-            5 * torch.linalg.norm(self.agent.robot.get_qvel()[..., :-2], axis=1)
+            5 * torch.linalg.norm(self.left_agent.robot.get_qvel()[..., :-2], axis=1)
         )
         reward += static_reward * info["is_obj_placed"] * is_grasped
 
@@ -268,4 +250,4 @@ class PickCubeYCBEnv(BaseEnv):
     def compute_normalized_dense_reward(
         self, obs: Any, action: torch.Tensor, info: Dict
     ):
-        return self.compute_dense_reward(obs=obs, action=action, info=info) / 6
+        return self.compute_dense_reward(obs=obs, action=action, info=info) / 21

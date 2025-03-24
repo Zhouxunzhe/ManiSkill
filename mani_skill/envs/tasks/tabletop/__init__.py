@@ -20,3 +20,4 @@ from .fold_suitcase import FoldSuitcaseEnv
 from .mobile_rm_pick import MobileRMPickEnv
 from .two_robot_fold import TwoRobotFoldEnv
 from .pick_cube_plate import PickCubeYCBEnv
+from .two_robot_pick_cube_ycb import TwoRobotPickCubeYCBEnv
