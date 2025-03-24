@@ -114,9 +114,8 @@ class Args:
     """Language encoder. can be "encoder_only", "tokenizer_only", "encoder_decoder", "tokenizer_decoder", "encoder_ffn", "tokenizer_ffn"""
     language_condition_type: str = "concat"
     """How language as condition, can be "concat", "adapter", "sparse_actions"""
-    sparse_horizon: int=100
-    sparse_steps: int=3
-    """Sparse action steps"""
+    sparse_steps: int=4
+    """Sparse action steps, no larger than 4"""
     prompt: str=""
     """Prompt for language condition"""
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
@@ -274,7 +273,6 @@ class Agent(nn.Module):
         self.obs_horizon = args.obs_horizon
         self.act_horizon = args.act_horizon
         self.pred_horizon = args.pred_horizon
-        self.sparse_horizon = args.sparse_horizon if hasattr(args, 'sparse_horizon') else 100
         self.sparse_steps = args.sparse_steps if hasattr(args, 'sparse_steps') else 3
 
         # Check if language encoder should be used
@@ -357,7 +355,7 @@ class Agent(nn.Module):
                 global_cond_dim = self.obs_horizon * (language_feature_dim + obs_state_dim) + language_feature_dim
             elif self.language_condition_type == "sparse_actions":
                 global_cond_dim = self.obs_horizon * (
-                            visual_feature_dim + obs_state_dim) + self.sparse_steps * self.act_dim
+                            visual_feature_dim + obs_state_dim) + self.sparse_steps * self.act_dim + language_feature_dim
             else:
                 # Vision-only case
                 global_cond_dim = self.obs_horizon * (visual_feature_dim + obs_state_dim)
@@ -519,21 +517,19 @@ class Agent(nn.Module):
                 )
 
                 # Get condition for sparse action prediction
-                noisy_sparse_actions_padded = F.pad(noisy_sparse_actions, (0, 0, 0, 1), mode='replicate')  # [B, 3, 8] -> [B, 4, 8]
                 sparse_cond = torch.cat([obs_cond, language_feature], dim=1)
 
                 # Predict noise for sparse actions
                 sparse_noise_pred = self.sparse_action_predictor(
-                    noisy_sparse_actions_padded, sparse_timesteps, global_cond=sparse_cond
+                    noisy_sparse_actions, sparse_timesteps, global_cond=sparse_cond
                 )
-                sparse_noise_pred = sparse_noise_pred[:, :3, :]
 
                 # Compute sparse prediction loss
                 sparse_loss = F.mse_loss(sparse_noise_pred, sparse_noise)
 
                 # Now use predicted sparse actions as condition for dense action prediction
                 # For training, we use teacher forcing (ground truth sparse actions)
-                obs_cond = torch.cat([obs_cond, sparse_target_actions.flatten(start_dim=1)], dim=1)
+                obs_cond = torch.cat([sparse_cond, sparse_target_actions.flatten(start_dim=1)], dim=1)
 
         # Sample noise to add to actions
         noise = torch.randn((B, self.pred_horizon, self.act_dim), device=action_seq.device)
@@ -607,7 +603,6 @@ class Agent(nn.Module):
                     )
 
                     # Run sparse diffusion process
-                    noisy_sparse_actions_padded = F.pad(noisy_sparse_actions, (0, 0, 0, 1), mode='replicate')
                     for k in self.sparse_noise_scheduler.timesteps:
                         # Predict noise
                         noise_pred = self.sparse_action_predictor(
@@ -617,15 +612,14 @@ class Agent(nn.Module):
                         )
 
                         # Inverse diffusion step
-                        noisy_sparse_actions_padded = self.sparse_noise_scheduler.step(
+                        noisy_sparse_actions = self.sparse_noise_scheduler.step(
                             model_output=noise_pred,
                             timestep=k,
-                            sample=noisy_sparse_actions_padded,
+                            sample=noisy_sparse_actions,
                         ).prev_sample
 
                     # Use predicted sparse actions as condition for dense action prediction
-                    noisy_sparse_actions = noisy_sparse_actions_padded[:, :3, :]
-                    obs_cond = torch.cat([obs_cond, noisy_sparse_actions.flatten(start_dim=1)], dim=1)
+                    obs_cond = torch.cat([sparse_cond, noisy_sparse_actions.flatten(start_dim=1)], dim=1)
 
             # Initialize dense action sequence from noise
             noisy_action_seq = torch.randn(
@@ -699,7 +693,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # create evaluation environment
     env_kwargs = dict(
