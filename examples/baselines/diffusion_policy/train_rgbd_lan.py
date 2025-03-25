@@ -1,6 +1,7 @@
 ALGO_NAME = "BC_Diffusion_rgbd_UNet"
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '0, 1'
 import random
 import time
 from collections import defaultdict
@@ -109,7 +110,7 @@ class Args:
     """Change shader used for rendering. Default is 'default' which is very fast. Can also be 'rt' for ray tracing and generating photo-realistic renders. 
     Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
     visual_encoder: str = "plain_conv"
-    """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
+    """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet", "siglip"""
     lan_encoder: str = "encoder_only"
     """Language encoder. can be "encoder_only", "tokenizer_only", "encoder_decoder", "tokenizer_decoder", "encoder_ffn", "tokenizer_ffn"""
     language_condition_type: str = "concat"
@@ -268,12 +269,13 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
 
 
 class Agent(nn.Module):
-    def __init__(self, env: VectorEnv, args: Args):
+    def __init__(self, env: VectorEnv, args: Args, device="cuda:1"):
         super().__init__()
+        self.device = device
         self.obs_horizon = args.obs_horizon
         self.act_horizon = args.act_horizon
         self.pred_horizon = args.pred_horizon
-        self.sparse_steps = args.sparse_steps if hasattr(args, 'sparse_steps') else 3
+        self.sparse_steps = args.sparse_steps if hasattr(args, 'sparse_steps') else 4
 
         # Check if language encoder should be used
         self.use_language = hasattr(args, 'lan_encoder') and args.lan_encoder != ""
@@ -300,7 +302,13 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         visual_feature_dim = 256
-        # Visual encoder setup (unchanged)
+        language_feature_dim = 256
+
+        from transformers import SiglipVisionModel, AutoProcessor
+        self.vision_model = SiglipVisionModel.from_pretrained("google/siglip2-base-patch16-224").to(device)
+        self.processor = AutoProcessor.from_pretrained("google/siglip2-base-patch16-224")
+
+        # Visual encoder
         if args.visual_encoder == 'plain_conv':
             from diffusion_policy.encoders.plain_conv import PlainConv
             self.visual_encoder = PlainConv(
@@ -321,12 +329,31 @@ class Agent(nn.Module):
             self.visual_encoder = ResNetEncoder(
                 out_dim=visual_feature_dim, pool_feature_map=True
             )
+        elif args.visual_encoder == 'siglip':
+            from diffusion_policy.encoders.siglip import SigLIP2Encoder
+            self.visual_encoder = SigLIP2Encoder(
+                out_dim=visual_feature_dim
+            )
+        elif args.visual_encoder == "shared":
+            from diffusion_policy.encoders.vis_encoder import VisionEncoder
+            self.visual_encoder = VisionEncoder(
+                vision_model=self.vision_model,
+                processor=self.processor,
+                out_dim=visual_feature_dim,
+                encoder_type=getattr(args, 'visual_encoder_type', "encoder_only"),
+                device=self.device
+            )
 
         # Language encoder setup (new)
         if self.use_language:
             from diffusion_policy.encoders.lan_encoder import LanguageEncoder
-            language_feature_dim = 256
-            self.language_encoder = LanguageEncoder(args.lan_encoder, output_dim=language_feature_dim)
+            self.language_encoder = LanguageEncoder(
+                vision_model=self.vision_model,
+                processor=self.processor,
+                encoder_type=args.lan_encoder,
+                output_dim=language_feature_dim,
+                device=self.device
+            )
 
             # Vision-language adapter
             if self.language_condition_type == "adapter":
@@ -335,7 +362,7 @@ class Agent(nn.Module):
                     nn.LayerNorm(512),
                     nn.ReLU(),
                     nn.Linear(512, language_feature_dim)
-                )
+                ).to(self.device)
 
             # Setup for sparse prediction
             if self.language_condition_type == "sparse_actions":
@@ -346,7 +373,7 @@ class Agent(nn.Module):
                     diffusion_step_embed_dim=args.diffusion_step_embed_dim,
                     down_dims=[args.unet_dims[0] // 2] + args.unet_dims[:-1],  # Smaller network
                     n_groups=args.n_groups,
-                )
+                ).to(self.device)
 
             # Adjust condition dimension based on language condition type
             if self.language_condition_type == "concat":
@@ -370,7 +397,7 @@ class Agent(nn.Module):
             diffusion_step_embed_dim=args.diffusion_step_embed_dim,
             down_dims=args.unet_dims,
             n_groups=args.n_groups,
-        )
+        ).to(self.device)
 
         # Diffusion setup
         self.num_diffusion_iters = 100
@@ -392,10 +419,12 @@ class Agent(nn.Module):
 
     def encode_obs(self, obs_seq, eval_mode):
         if self.include_rgb:
-            rgb = obs_seq["rgb"].float() / 255.0  # (B, obs_horizon, 3*k, H, W)
+            # rgb = obs_seq["rgb"].float() / 255.0  # (B, obs_horizon, 3*k, H, W)
+            rgb = obs_seq["rgb"].float()  # (B, obs_horizon, 3*k, H, W)
             img_seq = rgb
         if self.include_depth:
-            depth = obs_seq["depth"].float() / 1024.0  # (B, obs_horizon, 1*k, H, W)
+            # depth = obs_seq["depth"].float() / 1024.0  # (B, obs_horizon, 1*k, H, W)
+            depth = obs_seq["depth"].float()  # (B, obs_horizon, 1*k, H, W)
             img_seq = depth
         if self.include_rgb and self.include_depth:
             img_seq = torch.cat([rgb, depth], dim=2)  # (B, obs_horizon, C, H, W), C=4*k
@@ -417,11 +446,22 @@ class Agent(nn.Module):
 
         return visual_feature, feature.flatten(start_dim=1)  # Return both visual features and combined features
 
-    def encode_language(self, text_instructions):
-        """Encode language instructions"""
+    def encode_language(self, text_instructions, obs_seq=None, eval_mode=False):
+        """Encode language instructions with optional visual features"""
         if not self.use_language:
             return None
-        return self.language_encoder(text_instructions)  # (B, language_feature_dim)
+        if self.include_rgb:
+            # rgb = obs_seq["rgb"].float() / 255.0  # (B, obs_horizon, 3*k, H, W)
+            rgb = obs_seq["rgb"].float()  # (B, obs_horizon, 3*k, H, W)
+            img_seq = rgb
+        if self.include_depth:
+            # depth = obs_seq["depth"].float() / 1024.0  # (B, obs_horizon, 1*k, H, W)
+            depth = obs_seq["depth"].float()  # (B, obs_horizon, 1*k, H, W)
+            img_seq = depth
+        if self.include_rgb and self.include_depth:
+            img_seq = torch.cat([rgb, depth], dim=2)  # (B, obs_horizon, C, H, W), C=4*k
+
+        return self.language_encoder(text_instructions, obs_horizon=self.obs_horizon, image=img_seq)  # (B, language_feature_dim), (B, visual_feature_dim)
 
     def predict_sparse_actions(self, obs_seq, language_feature, eval_mode=False):
         """Predict sparse waypoint actions using language and vision"""
@@ -469,9 +509,9 @@ class Agent(nn.Module):
 
         # Handle language condition if available
         if text_instructions is None:
-            text_instructions = [args.prompt] * len(action_seq)
+            text_instructions = [args.prompt] * len(obs_seq['rgb'])
         if self.use_language and text_instructions is not None:
-            language_feature = self.encode_language(text_instructions)
+            language_feature = self.encode_language(text_instructions, obs_seq=obs_seq, eval_mode=False)
 
             if self.language_condition_type == "concat":
                 # Simple concatenation of features
@@ -489,6 +529,7 @@ class Agent(nn.Module):
                 ).flatten(start_dim=1)
 
                 # Combine with language feature
+                # print(adapted_obs_cond.shape, language_feature.shape)
                 obs_cond = torch.cat([adapted_obs_cond, language_feature], dim=1)
 
             elif self.language_condition_type == "sparse_actions":
@@ -573,7 +614,7 @@ class Agent(nn.Module):
             if text_instructions is None:
                 text_instructions = [args.prompt] * len(obs_seq['rgb'])
             if self.use_language and text_instructions is not None:
-                language_feature = self.encode_language(text_instructions)
+                language_feature = self.encode_language(text_instructions, obs_seq=obs_seq, eval_mode=True)
 
                 if self.language_condition_type == "concat":
                     # Simple concatenation of features
@@ -778,7 +819,7 @@ if __name__ == "__main__":
         persistent_workers=(args.num_dataload_workers > 0),
     )
 
-    agent = Agent(envs, args).to(device)
+    agent = Agent(envs, args, device=device)
 
     optimizer = optim.AdamW(
         params=agent.parameters(), lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6
@@ -796,7 +837,7 @@ if __name__ == "__main__":
     # accelerates training and improves stability
     # holds a copy of the model weights
     ema = EMAModel(parameters=agent.parameters(), power=0.75)
-    ema_agent = Agent(envs, args).to(device)
+    ema_agent = Agent(envs, args)
 
     best_eval_metrics = defaultdict(float)
     timings = defaultdict(float)
