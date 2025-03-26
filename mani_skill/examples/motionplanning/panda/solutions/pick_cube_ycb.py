@@ -40,7 +40,7 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     # -------------------------------------------------------------------------- #
     # Reach
     # -------------------------------------------------------------------------- #
-    reach_pose1 = grasp_pose * sapien.Pose([0, 0, -0.05])
+    reach_pose1 = grasp_pose * sapien.Pose([0, 0, -0.4])
     planner.move_to_pose_with_screw(reach_pose1)
 
     # -------------------------------------------------------------------------- #
@@ -52,8 +52,8 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     # -------------------------------------------------------------------------- #
     # Move to goal pose
     # -------------------------------------------------------------------------- #
-    goal_pose = sapien.Pose(env.obj.pose.sp.p, grasp_pose.q) * sapien.Pose([0, 0, -0.05])
-    reach_pose2 = goal_pose * sapien.Pose([0, 0, -0.1])
+    goal_pose = sapien.Pose(env._objs[0].pose.sp.p, grasp_pose.q) * sapien.Pose([0, 0, -0.05])
+    reach_pose2 = goal_pose * sapien.Pose([0, 0, -0.4])
     planner.move_to_pose_with_screw(reach_pose2)
     res = planner.move_to_pose_with_screw(goal_pose)
     planner.open_gripper()

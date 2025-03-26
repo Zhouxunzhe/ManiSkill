@@ -51,7 +51,7 @@ class PickCubeYCBEnv(BaseEnv):
     SUPPORTED_ROBOTS = ["panda", "panda_wristcam", "fetch"]
     agent: Union[Panda, PandaWristCam, Fetch]
     cube_half_size = 0.02
-    goal_thresh = 0.2
+    goal_thresh = 0.05
 
     def __init__(
         self,
@@ -79,7 +79,7 @@ class PickCubeYCBEnv(BaseEnv):
                 ]  # NOTE (arth): ignore these non-graspable/hard to grasp ycb objects
             ]
         )
-        self.all_model_ids = np.array(["029_plate"])
+        self.all_model_ids = np.array(["029_plate", "002_master_chef_can", "004_sugar_box", "065-c_cups", "072-a_toy_airplane"])
         # self.all_model_ids = np.array(["005_tomato_soup_can"])
         if reconfiguration_freq is None:
             if num_envs == 1:
@@ -115,6 +115,35 @@ class PickCubeYCBEnv(BaseEnv):
     def _load_agent(self, options: dict):
         super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
 
+    def generate_spaced_points(self, n, min_dist=0.4, x_range=(-0.8, 0.8), y_range=(-0.8, 0.8)):
+        points = []
+        def distance(p1, p2):
+            return np.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
+        x = np.random.uniform(x_range[0], x_range[1])
+        y = np.random.uniform(y_range[0], y_range[1])
+        points.append((x, y))
+        attempts = 0
+        max_attempts = 1000  # 防止无限循环
+
+        while len(points) < n and attempts < max_attempts:
+            x = np.random.uniform(x_range[0], x_range[1])
+            y = np.random.uniform(y_range[0], y_range[1])
+            new_point = (x, y)
+            valid = True
+            for existing_point in points:
+                if distance(new_point, existing_point) < min_dist:
+                    valid = False
+                    break
+            if valid:
+                points.append(new_point)
+                attempts = 0  # 重置尝试计数器
+            else:
+                attempts += 1
+        if len(points) < n:
+            print(f"Warning：Cannot generate {n} points，only generate {len(points)} points")
+
+        return points
+
     def _load_scene(self, options: dict):
         global WARNED_ONCE
         self.table_scene = TableSceneBuilder(
@@ -124,41 +153,31 @@ class PickCubeYCBEnv(BaseEnv):
 
         # randomize the list of all possible models in the YCB dataset
         # then sub-scene i will load model model_ids[i % number_of_ycb_objects]
-        model_ids = self._batched_episode_rng.choice(self.all_model_ids, replace=True)
-        if (
-            self.num_envs > 1
-            and self.num_envs < len(self.all_model_ids)
-            and self.reconfiguration_freq <= 0
-            and not WARNED_ONCE
-        ):
-            WARNED_ONCE = True
-            print(
-                """There are less parallel environments than total available models to sample.
-                Not all models will be used during interaction even after resets unless you call env.reset(options=dict(reconfigure=True))
-                or set reconfiguration_freq to be >= 1."""
-            )
+        # model_ids = self._batched_episode_rng.choice(self.all_model_ids, replace=True)
+        model_ids = self.all_model_ids
+        xy_poses = self.generate_spaced_points(len(model_ids) + 1)
 
         self._objs: List[Actor] = []
         self.obj_heights = []
         for i, model_id in enumerate(model_ids):
-            # TODO: before official release we will finalize a metadata dataclass that these build functions should return.
             builder = actors.get_actor_builder(
                 self.scene,
                 id=f"ycb:{model_id}",
             )
-            builder.initial_pose = sapien.Pose(p=[0, 0.2, 0])
-            builder.set_scene_idxs([i])
+            x, y = xy_poses[i]
+            builder.initial_pose = sapien.Pose(p=[x, y, 0])
             self._objs.append(builder.build(name=f"{model_id}-{i}"))
             self.remove_from_state_dict_registry(self._objs[-1])
+        cube_x, cube_y = xy_poses[-1]
         self.cube = actors.build_cube(
             self.scene,
             half_size=self.cube_half_size,
             color=[0, 1, 0, 1],
             name="cube",
-            initial_pose=sapien.Pose(p=[0, -0.2, self.cube_half_size]),
+            initial_pose=sapien.Pose(p=[cube_x, cube_y, self.cube_half_size]),
         )
-        self.obj = Actor.merge(self._objs, name="ycb_object")
-        self.add_to_state_dict_registry(self.obj)
+        # self.obj = Actor.merge(self._objs, name="ycb_object")
+        # self.add_to_state_dict_registry(self.obj)
 
     def _after_reconfigure(self, options: dict):
         self.object_zs = []
@@ -170,22 +189,16 @@ class PickCubeYCBEnv(BaseEnv):
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         with torch.device(self.device):
-            b = len(env_idx)
             self.table_scene.initialize(env_idx)
-            xyz = self.obj.pose.p
-            xyz[:, :2] += torch.rand((b, 2)) * 0.2
-            xyz[:, 2] = self.object_zs[env_idx]
-            qs = random_quaternions(b, lock_x=True, lock_y=True)
-            self.obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            for i, obj in enumerate(self._objs):
+                xyz = obj.pose.p
+                xyz[:, 2] = self.object_zs[i]
+                qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+                obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
 
             xyz = self.cube.pose.p
-            xyz[:, :2] += torch.rand((b, 2)) * 0.2
-            qs = random_quaternions(b, lock_x=True, lock_y=True)
-            self.cube.set_pose(Pose.create_from_pq(xyz, qs))
-
-            goal_xyz = torch.zeros((b, 3))
-            goal_xyz[:, :2] = torch.rand((b, 2)) * 0.2 - 0.1
-            goal_xyz[:, 2] = torch.rand((b)) * 0.3 + xyz[:, 2]
+            qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+            self.cube.set_pose(Pose.create_from_pq(p=xyz, q=qs))
 
             # Initialize robot arm to a higher position above the table than the default typically used for other table top tasks
             if self.robot_uids == "panda" or self.robot_uids == "panda_wristcam":
@@ -210,32 +223,30 @@ class PickCubeYCBEnv(BaseEnv):
                 raise NotImplementedError(self.robot_uids)
 
     def evaluate(self):
-        obj_to_goal_pos = self.cube.pose.p - self.obj.pose.p
+        obj_to_goal_pos = self.cube.pose.p - self._objs[0].pose.p
         is_obj_placed = torch.linalg.norm(obj_to_goal_pos, axis=1) <= self.goal_thresh
-        is_grasped = self.agent.is_grasping(self.obj)
+        is_grasped = self.agent.is_grasping(self.cube)
         is_robot_static = self.agent.is_static(0.2)
         return dict(
             is_grasped=is_grasped,
             obj_to_goal_pos=obj_to_goal_pos,
             is_obj_placed=is_obj_placed,
             is_robot_static=is_robot_static,
-            is_grasping=self.agent.is_grasping(self.obj),
             success=torch.logical_and(is_obj_placed, is_robot_static),
         )
 
     def _get_obs_extra(self, info: Dict):
         obs = dict(
             tcp_pose=self.agent.tcp.pose.raw_pose,
-            goal_pos=self.obj.pose.p,
+            goal_pos=self._objs[0].pose.p,
             is_grasped=info["is_grasped"],
         )
         if "state" in self.obs_mode:
             obs.update(
-                obj_pose=self.obj.pose.raw_pose,
-                tcp_to_obj_pos=self.obj.pose.p - self.agent.tcp.pose.p,
+                tcp_to_goal_pos=self._objs[0].pose.p - self.agent.tcp.pose.p,
                 cube_pose=self.cube.pose.raw_pose,
                 tcp_to_cube_pos=self.cube.pose.p - self.agent.tcp.pose.p,
-                cube_to_goal_pos=self.obj.pose.p - self.cube.pose.p,
+                cube_to_goal_pos=self._objs[0].pose.p - self.cube.pose.p,
             )
         return obs
 
@@ -250,7 +261,7 @@ class PickCubeYCBEnv(BaseEnv):
         reward += is_grasped
 
         cube_to_goal_dist = torch.linalg.norm(
-            self.cube.pose.p - self.obj.pose.p, axis=1
+            self.cube.pose.p - self._objs[0].pose.p, axis=1
         )
         place_reward = 1 - torch.tanh(5 * cube_to_goal_dist)
         reward += place_reward * is_grasped

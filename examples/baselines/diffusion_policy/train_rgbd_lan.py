@@ -304,9 +304,8 @@ class Agent(nn.Module):
         visual_feature_dim = 256
         language_feature_dim = 256
 
-        from transformers import SiglipVisionModel, AutoProcessor
-        self.vision_model = SiglipVisionModel.from_pretrained("google/siglip2-base-patch16-224").to(device)
-        self.processor = AutoProcessor.from_pretrained("google/siglip2-base-patch16-224")
+        self.vision_model = None
+        self.processor = None
 
         # Visual encoder
         if args.visual_encoder == 'plain_conv':
@@ -335,6 +334,11 @@ class Agent(nn.Module):
                 out_dim=visual_feature_dim
             )
         elif args.visual_encoder == "shared":
+            from transformers import SiglipVisionModel, AutoProcessor
+            if self.vision_model is  None:
+                self.vision_model = SiglipVisionModel.from_pretrained("google/siglip2-base-patch16-224").to(device)
+            if self.processor is None:
+                self.processor = AutoProcessor.from_pretrained("google/siglip2-base-patch16-224")
             from diffusion_policy.encoders.vis_encoder import VisionEncoder
             self.visual_encoder = VisionEncoder(
                 vision_model=self.vision_model,
@@ -346,7 +350,12 @@ class Agent(nn.Module):
 
         # Language encoder setup (new)
         if self.use_language:
+            from transformers import SiglipVisionModel, AutoProcessor
             from diffusion_policy.encoders.lan_encoder import LanguageEncoder
+            if self.vision_model is None:
+                self.vision_model = SiglipVisionModel.from_pretrained("google/siglip2-base-patch16-224").to(device)
+            if self.processor is None:
+                self.processor = AutoProcessor.from_pretrained("google/siglip2-base-patch16-224")
             self.language_encoder = LanguageEncoder(
                 vision_model=self.vision_model,
                 processor=self.processor,
