@@ -199,18 +199,18 @@ class PickCubeYCBEnv(BaseEnv):
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         with torch.device(self.device):
             self.table_scene.initialize(env_idx)
-            # for i, obj in enumerate(self._objs):
-            #     xyz = obj.pose.p
-            #     xyz[:, 2] = self.object_zs[i]
-            #     qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
-            #     obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
-            #
-            # xyz = self.cube1.pose.p
-            # qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
-            # self.cube1.set_pose(Pose.create_from_pq(p=xyz, q=qs))
-            # xyz = self.cube2.pose.p
-            # qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
-            # self.cube2.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            for i, obj in enumerate(self._objs):
+                xyz = obj.pose.p
+                xyz[:, 2] = self.object_zs[i]
+                qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+                obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+
+            xyz = self.cube1.pose.p
+            qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+            self.cube1.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            xyz = self.cube2.pose.p
+            qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+            self.cube2.set_pose(Pose.create_from_pq(p=xyz, q=qs))
 
             # Initialize robot arm to a higher position above the table than the default typically used for other table top tasks
             if self.robot_uids == "panda" or self.robot_uids == "panda_wristcam":
