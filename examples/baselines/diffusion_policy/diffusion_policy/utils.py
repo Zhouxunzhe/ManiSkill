@@ -138,6 +138,10 @@ def load_demo_dataset(
             )
     return dataset
 
+def decode_tensor_to_string(tensor):
+    byte_seq = tensor.tobytes().rstrip(b'\x00')
+    return byte_seq.decode('utf-8')
+
 def load_demo_dataset_with_lan(
     path, keys=["observations", "actions"], num_traj=None, concat=True
 ):
@@ -153,8 +157,8 @@ def load_demo_dataset_with_lan(
     if 'prompt' in list(raw_data['traj_0']['obs']['extra'].keys()):
         prompts = []
         for idx in raw_data:
-            prompt_bytes = raw_data[idx]['obs']['extra']['prompt'].numpy().tobytes()  # 转换为字节
-            prompt_str = prompt_bytes.decode('utf-8')  # 解码为字符串
+            prompt_array = raw_data[idx]['obs']['extra']['prompt'][0]
+            prompt_str = decode_tensor_to_string(prompt_array)
             prompts.append(prompt_str)
         dataset['language'] = prompts
     for target_key in keys:

@@ -27,10 +27,10 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from .diffusion_policy.conditional_unet1d import ConditionalUnet1D
-from .diffusion_policy.evaluate import evaluate
-from .diffusion_policy.make_env import make_eval_envs
-from .diffusion_policy.utils import (IterationBasedBatchSampler,
+from diffusion_policy.conditional_unet1d import ConditionalUnet1D
+from diffusion_policy.evaluate import evaluate
+from diffusion_policy.make_env import make_eval_envs
+from diffusion_policy.utils import (IterationBasedBatchSampler,
                                     build_state_obs_extractor, convert_obs,
                                     worker_init_fn)
 
@@ -128,7 +128,7 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
     def __init__(self, data_path, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj):
         self.include_rgb = include_rgb
         self.include_depth = include_depth
-        from .diffusion_policy.utils import load_demo_dataset
+        from diffusion_policy.utils import load_demo_dataset
         trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
         # trajectories['observations'] is a list of dict, each dict is a traj, with keys in obs_space, values with length L+1
         # trajectories['actions'] is a list of np.ndarray (L, act_dim)
@@ -273,22 +273,22 @@ class Agent(nn.Module):
 
         visual_feature_dim = 256
         if args.visual_encoder == 'plain_conv':
-            from .diffusion_policy.encoders.plain_conv import PlainConv
+            from diffusion_policy.encoders.plain_conv import PlainConv
             self.visual_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
             )
         elif args.visual_encoder == 'clip':
-            from .diffusion_policy.encoders.clip import CLIPEncoder
+            from diffusion_policy.encoders.clip import CLIPEncoder
             self.visual_encoder = CLIPEncoder(
                 out_dim=visual_feature_dim
             )
         elif args.visual_encoder == 'dinov2':
-            from .diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            from diffusion_policy.encoders.dinov2 import DINOv2Encoder
             self.visual_encoder = DINOv2Encoder(
                 out_dim=visual_feature_dim
             )
         elif args.visual_encoder == 'resnet':
-            from .diffusion_policy.encoders.resnet import ResNetEncoder
+            from diffusion_policy.encoders.resnet import ResNetEncoder
             self.visual_encoder = ResNetEncoder(
                 out_dim=visual_feature_dim, pool_feature_map=True
             )

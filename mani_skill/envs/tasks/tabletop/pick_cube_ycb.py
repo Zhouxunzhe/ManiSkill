@@ -51,7 +51,7 @@ class PickCubeYCBEnv(BaseEnv):
     SUPPORTED_ROBOTS = ["panda", "panda_wristcam", "fetch"]
     agent: Union[Panda, PandaWristCam, Fetch]
     cube_half_size = 0.02
-    goal_thresh = 0.06
+    goal_thresh = 0.04
 
     def __init__(
         self,
@@ -202,8 +202,10 @@ class PickCubeYCBEnv(BaseEnv):
         if self.is_pour:
             self.source_obj = self._objs[1]
             self.target_obj = self._objs[0]
-        # self.obj = Actor.merge(self._objs, name="ycb_object")
-        # self.add_to_state_dict_registry(self.obj)
+
+        # self.is_pour = False
+        # self.source_obj = self.cube1
+        # self.target_obj = self._objs[0]
 
     def _after_reconfigure(self, options: dict):
         self.object_zs = []
@@ -265,9 +267,9 @@ class PickCubeYCBEnv(BaseEnv):
                     closest_pair = (src_obj, tgt_obj)
                     obj_to_goal_pos_min = obj_to_goal_pos
 
-        is_obj_placed = min_dist <= self.goal_thresh
-        is_grasped = any(self.agent.is_grasping(src_obj) for src_obj in self.source_objs)
-        obj_to_goal_pos = obj_to_goal_pos_min
+        is_obj_placed = torch.tensor([min_dist <= self.goal_thresh])
+        is_grasped = torch.tensor([any(self.agent.is_grasping(src_obj) for src_obj in self.source_objs)])
+        obj_to_goal_pos = obj_to_goal_pos_min[0]
 
         # obj_to_goal_pos = self.source_obj.pose.p - self.target_obj.pose.p
         # is_obj_placed = torch.linalg.norm(obj_to_goal_pos, axis=1) <= self.goal_thresh
@@ -280,6 +282,14 @@ class PickCubeYCBEnv(BaseEnv):
             is_robot_static=is_robot_static,
             success=torch.logical_and(is_obj_placed, is_robot_static),
         )
+
+    def encode_string_to_tensor(self, s, max_len):
+        byte_seq = list(s.encode('utf-8'))
+        if len(byte_seq) < max_len:
+            byte_seq += [0] * (max_len - len(byte_seq))
+        elif len(byte_seq) > max_len:
+            byte_seq = byte_seq[:max_len]
+        return torch.tensor([byte_seq], dtype=torch.uint8).cpu()
 
     def _get_prompt(self):
         if self.source_obj == self.cube1 and self.target_obj == self._objs[0]:
@@ -299,15 +309,14 @@ class PickCubeYCBEnv(BaseEnv):
         if self.source_obj == self._objs[1] and self.target_obj == self._objs[0] and self.is_pour:
             prompt_str = "pick yellow cup and pour and place on plate."
 
-        prompt_bytes = list(prompt_str.encode('utf-8'))  # 转换为字节列表
-        prompt_tensor = torch.tensor(prompt_bytes, dtype=torch.uint8).cpu()
+        prompt_tensor = self.encode_string_to_tensor(prompt_str, 100)
         return prompt_tensor
 
     def _get_obs_extra(self, info: Dict):
         obs = dict(
             tcp_pose=self.agent.tcp.pose.raw_pose,
-            goal_pos=self.target_obj.pose.p,
             is_grasped=info["is_grasped"],
+            is_obj_placed=info["is_obj_placed"],
             prompt=self._get_prompt(),
         )
         if "state" in self.obs_mode:

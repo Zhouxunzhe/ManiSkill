@@ -24,10 +24,6 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     FINGER_LENGTH = 0.025
     env = env.unwrapped
 
-    # env.is_pour = False
-    # env.source_obj = env.cube2
-    # env.target_obj = env._objs[0]
-
     obb = get_actor_obb(env.source_obj)
 
     approaching = np.array([0, 0, -1])
