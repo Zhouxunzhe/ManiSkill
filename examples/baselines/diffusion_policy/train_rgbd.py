@@ -292,6 +292,11 @@ class Agent(nn.Module):
             self.visual_encoder = ResNetEncoder(
                 out_dim=visual_feature_dim, pool_feature_map=True
             )
+        elif args.visual_encoder == 'siglip':
+            from diffusion_policy.encoders.siglip import SigLIP2Encoder
+            self.visual_encoder = SigLIP2Encoder(
+                out_dim=visual_feature_dim
+            )
         self.noise_pred_net = ConditionalUnet1D(
             input_dim=self.act_dim,  # act_horizon is not used (U-Net doesn't care)
             global_cond_dim=self.obs_horizon * (visual_feature_dim + obs_state_dim),
@@ -455,7 +460,7 @@ if __name__ == "__main__":
         render_mode="rgb_array",
         human_render_camera_configs=dict(shader_pack="default"),
         viewer_camera_configs=dict(shader_pack=args.shader),
-        mode="eval"
+        # mode="eval"
     )
     assert args.max_episode_steps != None, "max_episode_steps must be specified as imitation learning algorithms task solve speed is dependent on the data you train on"
     env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -554,7 +559,7 @@ if __name__ == "__main__":
 
     # define evaluation and logging functions
     def evaluate_and_save_best(iteration):
-        if iteration % args.eval_freq == 0:
+        if iteration % args.eval_freq == 0 and iteration != 0:
             last_tick = time.time()
             ema.copy_to(ema_agent.parameters())
             eval_metrics = evaluate(

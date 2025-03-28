@@ -9,17 +9,18 @@ class SigLIP2Encoder(nn.Module):
         self.device = device
         self.out_dim = out_dim
 
-        self.visual_encoder = SiglipVisionModel.from_pretrained("google/siglip2-so400m-patch14-224") # google/siglip-so400m-patch14-384
-        self.processor = SiglipProcessor.from_pretrained("google/siglip2-so400m-patch14-224")
+        self.visual_encoder = SiglipVisionModel.from_pretrained("google/siglip2-base-patch16-224") # google/siglip-so400m-patch14-384
+        self.processor = SiglipProcessor.from_pretrained("google/siglip2-base-patch16-224")
         self.visual_feature_dim = self.visual_encoder.config.hidden_size  # 通常是 768 或 1152，取决于变体
         self.visual_projection = nn.Linear(self.visual_feature_dim, self.out_dim)
         self.to(device)
 
     def forward(self, image):
+        image = image[:, :3, :, :]
         inputs = self.processor(images=image.to(self.device), return_tensors="pt").to(self.visual_encoder.device)
         with torch.no_grad():
             outputs = self.visual_encoder(**inputs)
-        visual_feature = outputs.last_hidden_state.mean(dim=1)  # (B*obs_horizon, hidden_size)
+        visual_feature = outputs.pooler_output  # (B*obs_horizon, hidden_size)
         visual_feature = self.visual_projection(visual_feature)
 
         return visual_feature

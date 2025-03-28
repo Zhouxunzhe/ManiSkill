@@ -1,5 +1,8 @@
 import numpy as np
 import sapien
+import random
+from transforms3d.euler import euler2quat
+from torch.fx.experimental.unification.multipledispatch.dispatcher import source
 
 from mani_skill.envs.tasks import PickCubeYCBEnv
 from mani_skill.examples.motionplanning.panda.motionplanner import \
@@ -21,8 +24,11 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     FINGER_LENGTH = 0.025
     env = env.unwrapped
 
-    # retrieves the object oriented bounding box (trimesh box object)
-    obb = get_actor_obb(env.cube2)
+    # env.is_pour = False
+    # env.source_obj = env.cube2
+    # env.target_obj = env._objs[0]
+
+    obb = get_actor_obb(env.source_obj)
 
     approaching = np.array([0, 0, -1])
     # get transformation matrix of the tcp pose, is default batched and on torch
@@ -35,12 +41,12 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
         depth=FINGER_LENGTH,
     )
     closing, center = grasp_info["closing"], grasp_info["center"]
-    grasp_pose = env.agent.build_grasp_pose(approaching, closing, env.cube2.pose.sp.p)
+    grasp_pose = env.agent.build_grasp_pose(approaching, closing, env.source_obj.pose.sp.p)
+    reach_pose1 = grasp_pose * sapien.Pose([0, 0, -0.3])
 
     # -------------------------------------------------------------------------- #
     # Reach
     # -------------------------------------------------------------------------- #
-    reach_pose1 = grasp_pose * sapien.Pose([0, 0, -0.3])
     planner.move_to_pose_with_screw(reach_pose1)
 
     # -------------------------------------------------------------------------- #
@@ -52,8 +58,11 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     # -------------------------------------------------------------------------- #
     # Move to goal pose
     # -------------------------------------------------------------------------- #
-    goal_pose = sapien.Pose(env._objs[0].pose.sp.p, grasp_pose.q) * sapien.Pose([0, 0, -0.05])
-    reach_pose2 = goal_pose * sapien.Pose([0, 0, -0.3])
+
+    goal_pose = sapien.Pose(env.target_obj.pose.sp.p, grasp_pose.q) * sapien.Pose([0, 0, -0.05])
+    reach_pose2 = goal_pose * sapien.Pose([0, 0, -0.2])
+    if env.is_pour:
+        reach_pose2.q = euler2quat(np.pi / 2, np.pi / 2, np.pi)
     planner.move_to_pose_with_screw(reach_pose2)
     res = planner.move_to_pose_with_screw(goal_pose)
     planner.open_gripper()

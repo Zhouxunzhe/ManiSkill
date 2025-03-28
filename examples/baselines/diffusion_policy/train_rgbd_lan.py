@@ -140,8 +140,8 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
         self.include_depth = include_depth
         self.use_language = use_language
 
-        from diffusion_policy.utils import load_demo_dataset
-        trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
+        from diffusion_policy.utils import load_demo_dataset_with_lan
+        trajectories = load_demo_dataset_with_lan(data_path, num_traj=num_traj, concat=False)
 
         print("Raw trajectory loaded, beginning observation pre-processing...")
 
@@ -753,7 +753,7 @@ if __name__ == "__main__":
         render_mode="rgb_array",
         human_render_camera_configs=dict(shader_pack="default"),
         viewer_camera_configs=dict(shader_pack=args.shader),
-        mode="eval"
+        # mode="eval"
     )
     assert args.max_episode_steps != None, "max_episode_steps must be specified as imitation learning algorithms task solve speed is dependent on the data you train on"
     env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -853,7 +853,7 @@ if __name__ == "__main__":
 
     # define evaluation and logging functions
     def evaluate_and_save_best(iteration):
-        if iteration % args.eval_freq == 0:
+        if iteration % args.eval_freq == 0 and iteration != 0:
             last_tick = time.time()
             ema.copy_to(ema_agent.parameters())
             eval_metrics = evaluate(
