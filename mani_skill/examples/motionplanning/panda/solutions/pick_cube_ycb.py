@@ -38,12 +38,28 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     )
     closing, center = grasp_info["closing"], grasp_info["center"]
     grasp_pose = env.agent.build_grasp_pose(approaching, closing, env.source_obj.pose.sp.p)
-    reach_pose1 = grasp_pose * sapien.Pose([0, 0, -0.3])
+    reach_pose1 = grasp_pose * sapien.Pose([
+        0 + np.random.uniform(-1, 1) * 0.1,
+        0 + np.random.uniform(-1, 1) * 0.1,
+        -0.3 + np.random.uniform(-1, 1) * 0.1
+    ])
+    reach_pose2 = grasp_pose * sapien.Pose([
+        0 + np.random.uniform(-1, 1) * 0.1,
+        0 + np.random.uniform(-1, 1) * 0.1,
+        -0.2 + np.random.uniform(-1, 1) * 0.1
+    ])
+    reach_pose3 = grasp_pose * sapien.Pose([
+        0 + np.random.uniform(-1, 1) * 0.1,
+        0 + np.random.uniform(-1, 1) * 0.1,
+        -0.1 + np.random.uniform(-1, 1) * 0.1
+    ])
 
     # -------------------------------------------------------------------------- #
     # Reach
     # -------------------------------------------------------------------------- #
     planner.move_to_pose_with_screw(reach_pose1)
+    planner.move_to_pose_with_screw(reach_pose2)
+    planner.move_to_pose_with_screw(reach_pose3)
 
     # -------------------------------------------------------------------------- #
     # Grasp
@@ -56,10 +72,14 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     # -------------------------------------------------------------------------- #
 
     goal_pose = sapien.Pose(env.target_obj.pose.sp.p, grasp_pose.q) * sapien.Pose([0, 0, -0.05])
-    reach_pose2 = goal_pose * sapien.Pose([0, 0, -0.2])
+    reach_pose4 = goal_pose * sapien.Pose([
+        0 + np.random.uniform(-1, 1) * 0.1,
+        0 + np.random.uniform(-1, 1) * 0.1,
+        -0.2 + np.random.uniform(-1, 1) * 0.1
+    ])
     if env.is_pour:
-        reach_pose2.q = euler2quat(np.pi / 2, np.pi / 2, np.pi)
-    planner.move_to_pose_with_screw(reach_pose2)
+        reach_pose4.q = euler2quat(np.pi / 2, np.pi / 2, np.pi)
+    planner.move_to_pose_with_screw(reach_pose4)
     res = planner.move_to_pose_with_screw(goal_pose)
     planner.open_gripper()
 

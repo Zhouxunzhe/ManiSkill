@@ -51,13 +51,13 @@ class PickCubeYCBEnv(BaseEnv):
     SUPPORTED_ROBOTS = ["panda", "panda_wristcam", "fetch"]
     agent: Union[Panda, PandaWristCam, Fetch]
     cube_half_size = 0.02
-    goal_thresh = 0.04
+    goal_thresh = 0.06
 
     def __init__(
         self,
         *args,
         robot_uids="panda_wristcam",
-        robot_init_qpos_noise=0.02,
+        robot_init_qpos_noise=0.2,
         num_envs=1,
         reconfiguration_freq=None,
         **kwargs,
@@ -156,8 +156,8 @@ class PickCubeYCBEnv(BaseEnv):
         # then sub-scene i will load model model_ids[i % number_of_ycb_objects]
         # model_ids = self._batched_episode_rng.choice(self.all_model_ids, replace=True)
         model_ids = self.all_model_ids
-        xy_poses = self.generate_spaced_points(len(model_ids) + 2)
-        # xy_poses = [(0., 0.1), (0., -0.2), (0.1, -0.1), (-0.1, -0.1)]
+        # xy_poses = self.generate_spaced_points(len(model_ids) + 2)
+        xy_poses = [(0., 0.2), (0., -0.3), (-0.1, -0.1), (0.1, -0.1)]
 
         self._objs: List[Actor] = []
         self.obj_heights = []
@@ -203,9 +203,9 @@ class PickCubeYCBEnv(BaseEnv):
             self.source_obj = self._objs[1]
             self.target_obj = self._objs[0]
 
-        # self.is_pour = False
-        # self.source_obj = self.cube1
-        # self.target_obj = self._objs[0]
+        self.is_pour = False
+        self.source_obj = self.cube1
+        self.target_obj = self._objs[0]
 
     def _after_reconfigure(self, options: dict):
         self.object_zs = []
@@ -221,16 +221,16 @@ class PickCubeYCBEnv(BaseEnv):
             for i, obj in enumerate(self._objs):
                 xyz = obj.pose.p + torch.randn_like(obj.pose.p) * 0.01
                 xyz[:, 2] = self.object_zs[i]
-                qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+                qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
                 obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
 
             xyz = self.cube1.pose.p + torch.randn_like(self.cube1.pose.p) * 0.01
             xyz[:, 2] = self.cube_half_size
-            qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+            qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
             self.cube1.set_pose(Pose.create_from_pq(p=xyz, q=qs))
             xyz = self.cube2.pose.p + torch.randn_like(self.cube2.pose.p) * 0.01
             xyz[:, 2] = self.cube_half_size
-            qs = random_quaternions(len(self.all_model_ids) + 1, lock_x=True, lock_y=True)
+            qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
             self.cube2.set_pose(Pose.create_from_pq(p=xyz, q=qs))
 
             # Initialize robot arm to a higher position above the table than the default typically used for other table top tasks
@@ -260,12 +260,13 @@ class PickCubeYCBEnv(BaseEnv):
         closest_pair = None
         for src_obj in self.source_objs:
             for tgt_obj in self.target_objs:
-                obj_to_goal_pos = src_obj.pose.p - tgt_obj.pose.p
-                dist = torch.linalg.norm(obj_to_goal_pos)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_pair = (src_obj, tgt_obj)
-                    obj_to_goal_pos_min = obj_to_goal_pos
+                if src_obj != tgt_obj:
+                    obj_to_goal_pos = src_obj.pose.p - tgt_obj.pose.p
+                    dist = torch.linalg.norm(obj_to_goal_pos)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_pair = (src_obj, tgt_obj)
+                        obj_to_goal_pos_min = obj_to_goal_pos
 
         is_obj_placed = torch.tensor([min_dist <= self.goal_thresh])
         is_grasped = torch.tensor([any(self.agent.is_grasping(src_obj) for src_obj in self.source_objs)])

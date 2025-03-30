@@ -48,3 +48,4 @@ htmlcov/
 /exps/
 /wandb/
 /figures/test/
+*h5

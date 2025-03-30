@@ -508,7 +508,7 @@ if __name__ == "__main__":
 
     # create temporary env to get original observation space as AsyncVectorEnv (CPU parallelization) doesn't permit that
     tmp_env = gym.make(args.env_id, **env_kwargs)
-    orignal_obs_space = tmp_env.observation_space
+    original_obs_space = tmp_env.observation_space
     # determine whether the env will return rgb and/or depth data
     include_rgb = tmp_env.unwrapped.obs_mode_struct.visual.rgb
     include_depth = tmp_env.unwrapped.obs_mode_struct.visual.depth
@@ -517,7 +517,7 @@ if __name__ == "__main__":
     dataset = SmallDemoDataset_DiffusionPolicy(
         data_path=args.demo_path,
         obs_process_fn=obs_process_fn,
-        obs_space=orignal_obs_space,
+        obs_space=original_obs_space,
         include_rgb=include_rgb,
         include_depth=include_depth,
         device=device,
