@@ -4,9 +4,9 @@ import os
 import random
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
-from typing import List, Optional
+from typing import Optional
 
 import gymnasium as gym
 from gymnasium.vector.vector_env import VectorEnv
@@ -20,17 +20,16 @@ from tqdm import tqdm
 import tyro
 import h5py
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import EMAModel
 from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from hypernetwork import Hypernet, TargetNet, MLP
-from hyper_net.evaluate import evaluate
-from hyper_net.make_env import make_eval_envs
-from hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
+from .hyper_net.hypernetwork import Hypernet, TargetNet, MLP
+from .hyper_net.evaluate import evaluate
+from .hyper_net.make_env import make_eval_envs
+from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
 
 
@@ -174,7 +173,7 @@ class HypernetDataset(Dataset):
         obs_space = obs_space
 
         # Load real robot demonstration data using Diffusion Policy's utility
-        from hyper_net.utils import load_demo_dataset
+        from .hyper_net.utils import load_demo_dataset
         trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
         print("Raw trajectory loaded, beginning observation pre-processing...")
 
@@ -332,9 +331,8 @@ class Agent(nn.Module):
 
 def save_ckpt(run_name, tag):
     os.makedirs(f"runs/{run_name}/checkpoints", exist_ok=True)
-    ema.copy_to(ema_agent.parameters())
     torch.save(
-        {"agent": agent.state_dict(), "ema_agent": ema_agent.state_dict()},
+        {"agent": agent.state_dict()},
         f"runs/{run_name}/checkpoints/{tag}.pt"
     )
 
@@ -491,7 +489,7 @@ if __name__ == "__main__":
     )
 
     # 初始化代理
-    agent = Agent(envs, args, device=device).to(device)
+    agent = Agent(envs, args, device=device)
 
     # 设置优化器（仅优化 video_encoder 和 hypernet）
     optimizer = optim.AdamW(
@@ -509,19 +507,14 @@ if __name__ == "__main__":
         num_training_steps=args.total_iters
     )
 
-    # 设置 EMA（可选，与原始代码无此功能，可移除）
-    ema = EMAModel(parameters=agent.parameters(), power=0.75)
-    ema_agent = Agent(envs, args, device)
-
     best_eval_metrics = defaultdict(float)
     timings = defaultdict(float)
 
     def evaluate_and_save_best(iteration, val_videos):
         if iteration % args.eval_freq == 0 and iteration != 0:
             last_tick = time.time()
-            ema.copy_to(ema_agent.parameters())
             eval_metrics = evaluate(
-                args.num_eval_episodes, ema_agent, envs, device, val_videos, args.sim_backend
+                args.num_eval_episodes, agent, envs, device, val_videos, args.sim_backend
             )
             timings["eval"] += time.time() - last_tick
 
@@ -567,11 +560,6 @@ if __name__ == "__main__":
         optimizer.step()
         lr_scheduler.step()
         timings["backward"] += time.time() - last_tick
-
-        # EMA 更新（可选）
-        last_tick = time.time()
-        ema.step(agent.parameters())
-        timings["ema"] += time.time() - last_tick
 
         # 评估和日志记录
         evaluate_and_save_best(iteration, val_videos)

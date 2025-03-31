@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from hypernetwork import Hypernet, TargetNet, MLP
+from hyper_net.hypernetwork import Hypernet, TargetNet, MLP
 from torch.utils.data import Dataset, DataLoader
 import random
 import os
