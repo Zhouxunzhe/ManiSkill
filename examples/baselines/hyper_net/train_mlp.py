@@ -34,26 +34,6 @@ from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extrac
                                     convert_obs, worker_init_fn)
 
 
-# 保留你的神经网络结构
-class VideoEncoder(nn.Module):
-    def __init__(self, output_dim=64):
-        super().__init__()
-        self.resnet = models.resnet18(pretrained=True)
-        self.resnet.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
-        self.fc = nn.Linear(512, output_dim)
-
-    def forward(self, video):
-        batch, T, H, W, C = video.shape
-        video = video.permute(0, 1, 4, 2, 3)
-        video = video.view(batch * T, C, H, W)
-        features = self.resnet(video)
-        features = features.view(batch, T, 512)
-        features = features.mean(dim=1)
-        task_feature = self.fc(features)
-        return task_feature
-
-
 class RobotPolicy(nn.Module):
     def __init__(self, mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers, in_channels):
         super().__init__()
@@ -82,31 +62,6 @@ class RobotPolicy(nn.Module):
         else:
             output = self.mlp(mlp_input)
         return output
-
-
-class MLPTargetNet(TargetNet):
-    def __init__(self, mlp):
-        super().__init__()
-        self.mlp = mlp
-
-    def forward(self, x):
-        return self.mlp(x)
-
-    def get_in_dims(self):
-        return [self.mlp.fcs[0].in_features]
-
-    def get_out_dims(self):
-        return [self.mlp.fcs[-1].out_features]
-
-    def get_submodules(self):
-        return [self.mlp]
-
-    def get_submodule_names(self):
-        return ['mlp']
-
-    def merge_submodule_weights(self, weight_dicts):
-        return weight_dicts[0]
-
 
 # 配置参数
 @dataclass
@@ -155,7 +110,7 @@ class Args:
     ftask_dim = 64
     mlp_in_dim = 512 + robot_state_dim
     mlp_out_dim = action_dim
-    mlp_hidden_dim = 512
+    mlp_hidden_dim = 256
     mlp_num_layers = 4
     weight_dim = 128
     deriv_hidden_dim = 32
@@ -176,11 +131,10 @@ def reorder_keys(d, ref_dict):
 
 # 数据集类
 class HypernetDataset(Dataset):
-    def __init__(self, data_path, videos, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj=None):
+    def __init__(self, data_path, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj=None):
         self.device = device
         self.include_rgb = include_rgb
         self.include_depth = include_depth
-        self.videos = videos
         obs_process_fn = obs_process_fn
         obs_space = obs_space
 
@@ -229,7 +183,6 @@ class HypernetDataset(Dataset):
         print(f"Total transitions: {total_transitions}, Total obs sequences: {len(self.slices)}")
 
         self.trajectories = trajectories
-        self.task_names = list(self.videos.keys())
 
     def __getitem__(self, index):
         traj_idx, start, end = self.slices[index]
@@ -252,12 +205,7 @@ class HypernetDataset(Dataset):
             act_seq = torch.cat([act_seq, pad_action.repeat(end - L, 1)], dim=0)
         action = act_seq[-1]
 
-        task_name = 'human_pickplace_redcube_plate_the_red_cube_the_plate_with_the_right_hand'
-        video_idx = random.randint(0, len(self.videos[task_name])-1)
-        video = self.videos[task_name][video_idx].to(self.device, dtype=torch.float32) / 255.0
-
         return {
-            "video": video,
             "observations": obs_seq,
             "actions": action
         }
@@ -285,14 +233,9 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         # 初始化你的网络组件
-        self.video_encoder = VideoEncoder(output_dim=args.ftask_dim).to(device)
         self.policy = RobotPolicy(args.mlp_in_dim, args.mlp_out_dim, args.mlp_hidden_dim, args.mlp_num_layers, in_channels=total_visual_channels).to(device)
-        self.target_net = MLPTargetNet(self.policy.mlp)
-        self.hypernet = Hypernet(self.target_net, args.ftask_dim, args.weight_dim, args.deriv_hidden_dim, args.driv_num_layers,
-                            args.codec_hidden_dim, args.codec_num_layers, args.num_layers).to(device)
 
     def compute_loss(self, data_batch):
-        videos = data_batch["video"].to(self.device)
         if self.include_rgb:
             rgb = data_batch["observations"]["rgb"][:, -1].to(self.device).float() / 255.0
             obs_seq = rgb
@@ -304,19 +247,11 @@ class Agent(nn.Module):
         robot_states = data_batch["observations"]["state"][:, -1].to(self.device)
         actions = data_batch["actions"].to(self.device)  # 现在是单个动作
 
-        ftask = self.video_encoder(videos)
-        final_weight_dicts = self.hypernet.forward_blocks(ftask)
-        generated_weight = final_weight_dicts[-1]
-
-        pred_actions = self.policy(obs_seq, robot_states, mlp_params=generated_weight)
+        pred_actions = self.policy(obs_seq, robot_states, mlp_params=None)
         loss = F.mse_loss(pred_actions, actions)
         return loss
 
-    def get_action(self, obs, val_videos):
-        task_name = 'human_pickplace_redcube_plate_the_red_cube_the_plate_with_the_right_hand'
-        video_idx = random.randint(0, len(val_videos[task_name])-1)
-        video = val_videos[task_name][video_idx].unsqueeze(0).to(self.device, dtype=torch.float32) / 255.0
-
+    def get_action(self, obs):
         with torch.no_grad():
             if self.include_rgb:
                 rgb = (obs["rgb"][:, -1].to(self.device).float() / 255.0).permute(0, 3, 1, 2)
@@ -328,12 +263,7 @@ class Agent(nn.Module):
                 obs_seq = torch.cat([rgb, depth], dim=1)
             robot_state = obs["state"][:, -1].to(self.device)
 
-            # 生成权重
-            ftask = self.video_encoder(video)
-            final_weight_dicts = self.hypernet.forward_blocks(ftask)
-            generated_weight = final_weight_dicts[-1]
-
-            actions = self.policy(obs_seq, robot_state, mlp_params=generated_weight)
+            actions = self.policy(obs_seq, robot_state, mlp_params=None)
             return actions
 
 
@@ -379,7 +309,7 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # 确定设备
-    device = torch.device("cuda:1" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # 创建环境参数
     env_kwargs = dict(
@@ -444,38 +374,8 @@ if __name__ == "__main__":
     tmp_env.close()
 
     # 初始化数据集
-
-    # Load video data from HDF5 files
-    videos = {}
-    train_videos = {}
-    val_videos = {}
-    val_num_per_task = 5
-    video_files = [f for f in os.listdir(args.video_path) if f.endswith(".h5")]
-    num_tasks = len(video_files)
-    print(f"Detected {num_tasks} tasks from HDF5 files.")
-
-    for video_file in video_files:
-        task_name = video_file.replace(".h5", "")
-        hdf5_path = os.path.join(args.video_path, video_file)
-        with h5py.File(hdf5_path, 'r') as h5f:
-            num_videos = len(h5f)
-            videos[task_name] = []
-            for i in range(min(num_videos, 50)):  # videos_per_task=50
-                group = h5f[str(i)]
-                video = group["obs"][:]
-                videos[task_name].append(torch.tensor(video, dtype=torch.uint8).to(device))
-
-            # 随机划分 train/val
-            indices = list(range(len(videos[task_name])))
-            random.shuffle(indices)
-            val_indices = indices[:val_num_per_task]
-            train_indices = indices[val_num_per_task:]
-            train_videos[task_name] = [videos[task_name][i] for i in train_indices]
-            val_videos[task_name] = ([videos[task_name][i] for i in val_indices])
-
     dataset = HypernetDataset(
         data_path=args.demo_path,
-        videos=train_videos,
         obs_process_fn=obs_process_fn,
         obs_space=original_obs_space,
         include_rgb=include_rgb,
@@ -499,12 +399,8 @@ if __name__ == "__main__":
     # 初始化代理
     agent = Agent(envs, args, device=device)
 
-    # 设置优化器（仅优化 video_encoder 和 hypernet）
     optimizer = optim.AdamW(
-        list(agent.video_encoder.parameters()) + list(agent.hypernet.parameters()),
-        lr=args.lr,
-        betas=(0.95, 0.999),
-        weight_decay=1e-6
+        params=agent.parameters(), lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6
     )
 
     # 设置学习率调度器（可选）
@@ -518,11 +414,11 @@ if __name__ == "__main__":
     best_eval_metrics = defaultdict(float)
     timings = defaultdict(float)
 
-    def evaluate_and_save_best(iteration, val_videos):
+    def evaluate_and_save_best(iteration):
         if iteration % args.eval_freq == 0 and iteration != 0:
             last_tick = time.time()
             eval_metrics = evaluate(
-                args.num_eval_episodes, agent, envs, device, args.sim_backend, val_videos=val_videos
+                args.num_eval_episodes, agent, envs, device, args.sim_backend
             )
             timings["eval"] += time.time() - last_tick
 
@@ -570,7 +466,7 @@ if __name__ == "__main__":
         timings["backward"] += time.time() - last_tick
 
         # 评估和日志记录
-        evaluate_and_save_best(iteration, val_videos)
+        evaluate_and_save_best(iteration)
         log_metrics(iteration)
 
         # 定期保存检查点
@@ -582,7 +478,7 @@ if __name__ == "__main__":
         last_tick = time.time()
 
     # 最终评估和日志记录
-    evaluate_and_save_best(args.total_iters, val_videos)
+    evaluate_and_save_best(args.total_iters)
     log_metrics(args.total_iters)
 
     envs.close()

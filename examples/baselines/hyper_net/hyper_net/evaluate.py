@@ -4,7 +4,7 @@ import torch
 from tqdm import tqdm
 from mani_skill.utils import common
 
-def evaluate(n: int, agent, eval_envs, device, val_videos, sim_backend: str, progress_bar: bool = True):
+def evaluate(n: int, agent, eval_envs, device, sim_backend: str, progress_bar: bool = True, val_videos=None):
     agent.eval()
     if progress_bar:
         pbar = tqdm(total=n)
@@ -14,7 +14,10 @@ def evaluate(n: int, agent, eval_envs, device, val_videos, sim_backend: str, pro
         eps_count = 0
         while eps_count < n:
             obs = common.to_tensor(obs, device)
-            action_seq = agent.get_action(obs, val_videos)
+            if val_videos is not None:
+                action_seq = agent.get_action(obs, val_videos)
+            else:
+                action_seq = agent.get_action(obs)
             if sim_backend == "physx_cpu":
                 action_seq = action_seq.cpu().numpy()
             obs, rew, terminated, truncated, info = eval_envs.step(action_seq)

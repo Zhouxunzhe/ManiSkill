@@ -57,7 +57,7 @@ class PickCubeYCBEnv(BaseEnv):
         self,
         *args,
         robot_uids="panda_wristcam",
-        robot_init_qpos_noise=0.2,
+        robot_init_qpos_noise=0.02,
         num_envs=1,
         reconfiguration_freq=None,
         **kwargs,
@@ -221,17 +221,20 @@ class PickCubeYCBEnv(BaseEnv):
             for i, obj in enumerate(self._objs):
                 xyz = obj.pose.p + torch.randn_like(obj.pose.p) * 0.01
                 xyz[:, 2] = self.object_zs[i]
-                qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
-                obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+                # qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
+                # obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+                obj.pose.p = xyz
 
             xyz = self.cube1.pose.p + torch.randn_like(self.cube1.pose.p) * 0.01
             xyz[:, 2] = self.cube_half_size
-            qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
-            self.cube1.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            # qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
+            # self.cube1.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            self.cube1.pose.p = xyz
             xyz = self.cube2.pose.p + torch.randn_like(self.cube2.pose.p) * 0.01
             xyz[:, 2] = self.cube_half_size
-            qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
-            self.cube2.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            # qs = random_quaternions(len(self.all_model_ids) + 2, lock_x=True, lock_y=True)
+            # self.cube2.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+            self.cube2.pose.p = xyz
 
             # Initialize robot arm to a higher position above the table than the default typically used for other table top tasks
             if self.robot_uids == "panda" or self.robot_uids == "panda_wristcam":
