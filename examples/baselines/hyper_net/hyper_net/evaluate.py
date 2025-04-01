@@ -20,7 +20,7 @@ def evaluate(n: int, agent, eval_envs, device, sim_backend: str, progress_bar: b
                 action_seq = agent.get_action(obs)
             if sim_backend == "physx_cpu":
                 action_seq = action_seq.cpu().numpy()
-            obs, rew, terminated, truncated, info = eval_envs.step(action_seq)
+            obs, rew, terminated, truncated, info = eval_envs.step(action_seq[0])
 
             if truncated.any():
                 assert truncated.all() == truncated.any(), "all episodes should truncate at the same time for fair evaluation with other algorithms"

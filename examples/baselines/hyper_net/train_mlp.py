@@ -4,9 +4,9 @@ import os
 import random
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Optional
+from typing import List, Optional
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -33,25 +33,20 @@ from .hyper_net.make_env import make_eval_envs
 from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
 
+from diffusion_policy.encoders.plain_conv import PlainConv
+
 
 class RobotPolicy(nn.Module):
-    def __init__(self, mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers, in_channels):
+    def __init__(self, mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers):
         super().__init__()
-        self.resnet = models.resnet18(pretrained=True)
-        self.resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
         self.mlp = MLP(mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers)
 
         n_params = sum(p.numel() for p in self.mlp.parameters())
         print(f"number of parameters: {n_params / 1e6:.2f}M")
 
-    def forward(self, obs, robot_state, mlp_params=None):
-        features = self.resnet(obs)
-        features = features.view(features.size(0), -1)
-        mlp_input = torch.cat([features, robot_state], dim=1)
+    def forward(self, global_cond, mlp_params=None):
         if mlp_params is not None:
-            x = mlp_input
-            batch_size = x.shape[0]
+            x = global_cond
             for i, fc in enumerate(self.mlp.fcs):
                 weight = mlp_params[f'fcs.{i}.weight']
                 bias = mlp_params[f'fcs.{i}.bias']
@@ -60,73 +55,95 @@ class RobotPolicy(nn.Module):
                     x = self.mlp.activation(x)
             output = x
         else:
-            output = self.mlp(mlp_input)
+            output = self.mlp(global_cond)
         return output
 
-# 配置参数
 @dataclass
 class Args:
+    video_path: str= "processed_data"
+    """Where the prompt video at"""
     exp_name: Optional[str] = None
+    """the name of this experiment"""
     seed: int = 1
+    """seed of the experiment"""
     torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
+    """if toggled, cuda will be enabled by default"""
     track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "ManiSkill"
+    """the wandb's project name"""
     wandb_entity: Optional[str] = None
+    """the entity (team) of wandb's project"""
     capture_video: bool = True
+    """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     env_id: str = "PegInsertionSide-v1"
-    demo_path: str = ("")
-    video_path: str= "processed_data"
+    """the id of the environment"""
+    demo_path: str = (
+        "demos/PegInsertionSide-v1/trajectory.state.pd_ee_delta_pose.physx_cpu.h5"
+    )
+    """the path of demo dataset, it is expected to be a ManiSkill dataset h5py format file"""
     num_demos: Optional[int] = None
-    total_iters: int = 1000000
+    """number of trajectories to load from the demo dataset"""
+    total_iters: int = 1_000_000
+    """total timesteps of the experiment"""
     batch_size: int = 256
+    """the batch size of sample from the replay memory"""
 
+    # Diffusion Policy specific arguments
     lr: float = 1e-4
-    obs_horizon: int = 2
-    act_horizon: int = 8
-    pred_horizon: int = 16
-    diffusion_step_embed_dim: int = 64
-    n_groups: int = 8
+    """the learning rate of the diffusion policy"""
+    obs_horizon: int = 2  # Seems not very important in ManiSkill, 1, 2, 4 work well
+    act_horizon: int = 8  # Seems not very important in ManiSkill, 4, 8, 15 work well
+    pred_horizon: int = (
+        8  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
+    )
+    diffusion_step_embed_dim: int = 64  # not very important
+    unet_dims: List[int] = field(
+        default_factory=lambda: [64, 128, 256]
+    )  # default setting is about ~4.5M params
+    n_groups: int = (
+        8  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+    )
 
+    # Environment/experiment specific arguments
     obs_mode: str = "rgb+depth"
-    max_episode_steps: Optional[int] = 200
+    """The observation mode to use for the environment, which dictates what visual inputs to pass to the model. Can be "rgb", "depth", or "rgb+depth"."""
+    max_episode_steps: Optional[int] = None
+    """Change the environments' max_episode_steps to this value. Sometimes necessary if the demonstrations being imitated are too short. Typically the default
+    max episode steps of environments in ManiSkill are tuned lower so reinforcement learning agents can learn faster."""
     log_freq: int = 1000
+    """the frequency of logging the training metrics"""
     eval_freq: int = 5000
+    """the frequency of evaluating the agent on the evaluation environments"""
     save_freq: Optional[int] = None
+    """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
     num_eval_episodes: int = 100
+    """the number of episodes to evaluate the agent on"""
     num_eval_envs: int = 10
+    """the number of parallel environments to evaluate the agent on"""
     sim_backend: str = "physx_cpu"
+    """the simulation backend to use for evaluation environments. can be "cpu" or "gpu"""
     num_dataload_workers: int = 0
+    """the number of workers to use for loading the training data in the torch dataloader"""
     control_mode: str = "pd_joint_delta_pos"
+    """the control mode to use for the evaluation environments. Must match the control mode of the demonstration dataset."""
     shader: str = "default"
-
-    # Hypernet 参数
-    batch_size = 128
-    T = 10
-    obs_shape = (3, 128, 128)
-    robot_state_dim = 127
-    action_dim = 8
-    ftask_dim = 64
-    mlp_in_dim = 512 + robot_state_dim
-    mlp_out_dim = action_dim
-    mlp_hidden_dim = 256
-    mlp_num_layers = 4
-    weight_dim = 128
-    deriv_hidden_dim = 32
-    driv_num_layers = 2
-    codec_hidden_dim = 64
-    codec_num_layers = 2
-    num_layers = 8
-    val_num_per_task = 5
+    """Change shader used for rendering. Default is 'default' which is very fast. Can also be 'rt' for ray tracing and generating photo-realistic renders. 
+    Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
+    visual_encoder: str = "plain_conv"
+    """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
 
 def reorder_keys(d, ref_dict):
     out = dict()
     for k, v in ref_dict.items():
-        if isinstance(v, dict) or isinstance(v, spaces.Dict):
-            out[k] = reorder_keys(d[k], ref_dict[k])
-        else:
-            out[k] = d[k]
+        if k not in ['prompt']:
+            if isinstance(v, dict) or isinstance(v, spaces.Dict):
+                out[k] = reorder_keys(d[k], ref_dict[k])
+            else:
+                out[k] = d[k]
     return out
 
 # 数据集类
@@ -149,10 +166,10 @@ class HypernetDataset(Dataset):
             _obs_traj_dict = reorder_keys(obs_traj_dict, obs_space)
             _obs_traj_dict = obs_process_fn(_obs_traj_dict)
             if self.include_depth:
-                _obs_traj_dict["depth"] = torch.Tensor(_obs_traj_dict["depth"].astype(np.float32)).to(device=device, dtype=torch.float16)
+                _obs_traj_dict["depth"] = torch.Tensor(_obs_traj_dict["depth"].astype(np.float16))
             if self.include_rgb:
-                _obs_traj_dict["rgb"] = torch.from_numpy(_obs_traj_dict["rgb"]).to(device)
-            _obs_traj_dict["state"] = torch.from_numpy(_obs_traj_dict["state"]).to(device)
+                _obs_traj_dict["rgb"] = torch.from_numpy(_obs_traj_dict["rgb"])
+            _obs_traj_dict["state"] = torch.from_numpy(_obs_traj_dict["state"])
             obs_traj_dict_list.append(_obs_traj_dict)
         trajectories["observations"] = obs_traj_dict_list
         self.obs_keys = list(_obs_traj_dict.keys())
@@ -163,8 +180,21 @@ class HypernetDataset(Dataset):
         print("Obs/action pre-processing is done, start to pre-compute the slice indices...")
 
         # Define horizons (assuming these are passed via args or another mechanism)
-        self.obs_horizon = args.obs_horizon  # e.g., 2
-        self.pred_horizon = args.pred_horizon  # e.g., 16
+        if (
+            "delta_pos" in args.control_mode
+            or args.control_mode == "base_pd_joint_vel_arm_pd_joint_vel"
+        ):
+            print("Detected a delta controller type, padding with a zero action to ensure the arm stays still after solving tasks.")
+            self.pad_action_arm = torch.zeros(
+                (trajectories["actions"][0].shape[1] - 1,)
+            ).to(self.device)
+            # to make the arm stay still, we pad the action with 0 in 'delta_pos' control mode
+            # gripper action needs to be copied from the last action
+        else:
+            # NOTE for absolute joint pos control probably should pad with the final joint position action.
+            raise NotImplementedError(f"Control Mode {args.control_mode} not supported")
+        self.obs_horizon = obs_horizon = args.obs_horizon  # e.g., 2
+        self.pred_horizon = pred_horizon = args.pred_horizon  # e.g., 16
 
         # Pre-compute all possible (traj_idx, start, end) tuples
         self.slices = []
@@ -174,11 +204,11 @@ class HypernetDataset(Dataset):
             L = trajectories["actions"][traj_idx].shape[0]
             assert trajectories["observations"][traj_idx]["state"].shape[0] == L + 1
             total_transitions += L
-            pad_before = self.obs_horizon - 1
-            pad_after = self.pred_horizon - self.obs_horizon
+            pad_before = obs_horizon - 1
+            pad_after = pred_horizon - obs_horizon
             self.slices += [
-                (traj_idx, start, start + self.pred_horizon)
-                for start in range(-pad_before, L - self.pred_horizon + pad_after)
+                (traj_idx, start, start + pred_horizon)
+                for start in range(-pad_before, L - pred_horizon + pad_after)
             ]
         print(f"Total transitions: {total_transitions}, Total obs sequences: {len(self.slices)}")
 
@@ -192,22 +222,29 @@ class HypernetDataset(Dataset):
         obs_traj = self.trajectories["observations"][traj_idx]
         obs_seq = {}
         for k, v in obs_traj.items():
-            obs_seq[k] = v[max(0, start):start + self.obs_horizon]
+            obs_seq[k] = v[
+                max(0, start):start + self.obs_horizon
+            ].to(self.device)
             if start < 0:
                 pad_obs_seq = torch.stack([obs_seq[k][0]] * abs(start), dim=0)
-                obs_seq[k] = torch.cat((pad_obs_seq, obs_seq[k]), dim=0)
+                obs_seq[k] = torch.cat((pad_obs_seq, obs_seq[k]), dim=0).to(self.device)
 
-        act_seq = self.trajectories["actions"][traj_idx][max(0, start):end]
+        act_seq = self.trajectories["actions"][traj_idx][max(0, start):end].to(self.device)
         if start < 0:
             act_seq = torch.cat([act_seq[0].repeat(-start, 1), act_seq], dim=0)
         if end > L:
-            pad_action = act_seq[-1]
+            gripper_action = act_seq[-1, -1]
+            pad_action = torch.cat((self.pad_action_arm, gripper_action[None]), dim=0)
             act_seq = torch.cat([act_seq, pad_action.repeat(end - L, 1)], dim=0)
-        action = act_seq[-1]
+
+        assert (
+                obs_seq["state"].shape[0] == self.obs_horizon
+                and act_seq.shape[0] == self.pred_horizon
+        )
 
         return {
             "observations": obs_seq,
-            "actions": action
+            "actions": act_seq
         }
 
     def __len__(self):
@@ -220,8 +257,20 @@ class Agent(nn.Module):
         super().__init__()
         self.device = device
 
+        self.obs_horizon = args.obs_horizon
+        self.act_horizon = args.act_horizon
+        self.pred_horizon = args.pred_horizon
+        assert (
+            len(env.single_observation_space["state"].shape) == 2
+        )  # (obs_horizon, obs_dim)
+        assert len(env.single_action_space.shape) == 1  # (act_dim, )
+        assert (env.single_action_space.high == 1).all() and (
+            env.single_action_space.low == -1
+        ).all()
+
         # 从环境获取动作维度
         self.act_dim = env.single_action_space.shape[0]
+        obs_state_dim = env.single_observation_space["state"].shape[1]
 
         total_visual_channels = 0
         self.include_rgb = "rgb" in env.single_observation_space.keys()
@@ -233,37 +282,88 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         # 初始化你的网络组件
-        self.policy = RobotPolicy(args.mlp_in_dim, args.mlp_out_dim, args.mlp_hidden_dim, args.mlp_num_layers, in_channels=total_visual_channels).to(device)
+        fobs_dim = 256
+        mlp_hidden_dim = 512
+        mlp_num_layers = 4
+        mlp_in_dim = args.obs_horizon * (fobs_dim + obs_state_dim)
+        mlp_out_dim = args.pred_horizon * self.act_dim
+        self.policy = RobotPolicy(mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers).to(device)
+        if args.visual_encoder == 'plain_conv':
+            self.obs_encoder = PlainConv(
+                in_channels=total_visual_channels, out_dim=fobs_dim, pool_feature_map=True
+            ).to(device)
+        elif args.visual_encoder == 'clip':
+            from diffusion_policy.encoders.clip import CLIPEncoder
+            self.obs_encoder = CLIPEncoder(
+                out_dim=fobs_dim
+            ).to(device)
+        elif args.visual_encoder == 'dinov2':
+            from diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            self.obs_encoder = DINOv2Encoder(
+                out_dim=fobs_dim
+            ).to(device)
+        elif args.visual_encoder == 'resnet':
+            from diffusion_policy.encoders.resnet import ResNetEncoder
+            self.obs_encoder = ResNetEncoder(
+                out_dim=fobs_dim, pool_feature_map=True
+            ).to(device)
+        elif args.visual_encoder == 'siglip':
+            from diffusion_policy.encoders.siglip import SigLIP2Encoder
+            self.obs_encoder = SigLIP2Encoder(
+                out_dim=fobs_dim
+            ).to(device)
+
+    def encode_obs(self, obs_seq, eval_mode):
+        if self.include_rgb:
+            rgb = obs_seq["rgb"].float() / 255.0  # (B, obs_horizon, 3*k, H, W)
+            img_seq = rgb
+        if self.include_depth:
+            depth = obs_seq["depth"].float() / 1024.0  # (B, obs_horizon, 1*k, H, W)
+            img_seq = depth
+        if self.include_rgb and self.include_depth:
+            img_seq = torch.cat([rgb, depth], dim=2)  # (B, obs_horizon, C, H, W), C=4*k
+        batch_size = img_seq.shape[0]
+        img_seq = img_seq.flatten(end_dim=1)  # (B*obs_horizon, C, H, W)
+        if hasattr(self, "aug") and not eval_mode:
+            img_seq = self.aug(img_seq)  # (B*obs_horizon, C, H, W)
+        visual_feature = self.obs_encoder(img_seq)  # (B*obs_horizon, D)
+        visual_feature = visual_feature.reshape(
+            batch_size, self.obs_horizon, visual_feature.shape[1]
+        )  # (B, obs_horizon, D)
+        feature = torch.cat(
+            (visual_feature, obs_seq["state"]), dim=-1
+        )  # (B, obs_horizon, D+obs_state_dim)
+        return feature.flatten(start_dim=1)  # (B, obs_horizon * (D+obs_state_dim))
 
     def compute_loss(self, data_batch):
-        if self.include_rgb:
-            rgb = data_batch["observations"]["rgb"][:, -1].to(self.device).float() / 255.0
-            obs_seq = rgb
-        if self.include_depth:
-            depth = data_batch["observations"]["depth"][:, -1].to(self.device).float() / 1024.0
-            obs_seq = depth
-        if self.include_rgb and self.include_depth:
-            obs_seq = torch.cat([rgb, depth], dim=1)
-        robot_states = data_batch["observations"]["state"][:, -1].to(self.device)
-        actions = data_batch["actions"].to(self.device)  # 现在是单个动作
+        obs_seq = data_batch["observations"]
+        action_seq = data_batch["actions"]
 
-        pred_actions = self.policy(obs_seq, robot_states, mlp_params=None)
-        loss = F.mse_loss(pred_actions, actions)
+        B = obs_seq["state"].shape[0]
+        # observation as FiLM conditioning
+        obs_cond = self.encode_obs(
+            obs_seq, eval_mode=False
+        )  # (B, obs_horizon * obs_dim)
+
+        actions_pred = self.policy(obs_cond, mlp_params=None)
+        actions_pred = actions_pred.view(B, self.pred_horizon, self.act_dim)
+        loss = F.mse_loss(actions_pred, action_seq)
         return loss
 
-    def get_action(self, obs):
+    def get_action(self, obs_seq):
+        B = obs_seq["state"].shape[0]
         with torch.no_grad():
             if self.include_rgb:
-                rgb = (obs["rgb"][:, -1].to(self.device).float() / 255.0).permute(0, 3, 1, 2)
-                obs_seq = rgb
+                obs_seq["rgb"] = obs_seq["rgb"].permute(0, 1, 4, 2, 3)
             if self.include_depth:
-                depth = (obs["depth"][:, -1].to(self.device).float() / 1024.0).permute(0, 3, 1, 2)
-                obs_seq = depth
-            if self.include_rgb and self.include_depth:
-                obs_seq = torch.cat([rgb, depth], dim=1)
-            robot_state = obs["state"][:, -1].to(self.device)
+                obs_seq["depth"] = obs_seq["depth"].permute(0, 1, 4, 2, 3)
 
-            actions = self.policy(obs_seq, robot_state, mlp_params=None)
+            obs_cond = self.encode_obs(
+                obs_seq, eval_mode=False
+            )  # (B, obs_horizon * obs_dim)
+
+            actions = self.policy(obs_cond, mlp_params=None)
+            actions = actions.view(B, self.pred_horizon, self.act_dim)
             return actions
 
 
@@ -299,8 +399,6 @@ if __name__ == "__main__":
             assert (
                 control_mode == args.control_mode
             ), f"Control mode mismatched. Dataset has control mode {control_mode}, but args has control mode {args.control_mode}"
-    assert args.obs_horizon + args.act_horizon - 1 <= args.pred_horizon
-    assert args.obs_horizon >= 1 and args.act_horizon >= 1 and args.pred_horizon >= 1
 
     # 设置随机种子
     random.seed(args.seed)
