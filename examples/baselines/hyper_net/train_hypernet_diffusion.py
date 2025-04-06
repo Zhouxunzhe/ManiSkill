@@ -1,4 +1,4 @@
-ALGO_NAME = "BC_Hypernet_Diffusion"
+ALGO_NAME = "BC_hypernet_step_encoder"
 
 import os
 import random
@@ -20,44 +20,69 @@ import torchvision.models as models
 from tqdm import tqdm
 import tyro
 import h5py
-from diffusers.optimization import get_scheduler
 from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from .hyper_net.hypernetwork import Hypernet, TargetNet, MLP
-from .hyper_net.evaluate_mlp import evaluate
-from .hyper_net.make_env import make_eval_envs
-from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
+from hyper_net.evaluate_diffusion import evaluate
+from hyper_net.make_env import make_eval_envs
+from hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
-
+from hyper_net.hypernetwork_diffusion import UNetPolicy
+from hyper_net.hypernetwork import Hypernet
+from diffusers.optimization import get_scheduler
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
 
 
-class RobotPolicy(nn.Module):
-    def __init__(self, mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers):
+# class VideoEncoder(nn.Module):
+#     def __init__(self, output_dim=64):
+#         super().__init__()
+#         self.resnet = models.resnet18(pretrained=True)
+#         self.resnet.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+#         self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
+#         self.fc = nn.Linear(512, output_dim)
+#
+#     def forward(self, video):
+#         batch, T, H, W, C = video.shape
+#         video = video.permute(0, 1, 4, 2, 3)
+#         video = video.view(batch * T, C, H, W)
+#         features = self.resnet(video)
+#         features = features.view(batch, T, 512)
+#         features = features.mean(dim=1)
+#         task_feature = self.fc(features)
+#         return task_feature
+
+class VideoEncoder(nn.Module):
+    def __init__(self, output_dim=64):
         super().__init__()
-        self.mlp = MLP(mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers)
+        # Replace ResNet with PlainConv
+        self.cnn = PlainConv(
+            in_channels=3,
+            out_dim=512,  # Match the dimension of ResNet18 features
+            pool_feature_map=True,
+            last_act=True
+        )
+        # Final FC layer similar to original
+        self.fc = nn.Linear(512, output_dim)
 
-        n_params = sum(p.numel() for p in self.mlp.parameters())
-        print(f"number of parameters: {n_params / 1e6:.2f}M")
+    def forward(self, video):
+        # Handle the same input format as the original encoder
+        batch, T, H, W, C = video.shape
+        video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
+        video = video.reshape(batch * T, C, H, W)
+        # Extract features using PlainConv instead of ResNet
+        features = self.cnn(video)
+        # Reshape and pool temporal dimension, same as original
+        features = features.view(batch, T, 512)
+        features = features.mean(dim=1)
+        # Final projection
+        task_feature = self.fc(features)
+        return task_feature
 
-    def forward(self, global_cond, mlp_params=None):
-        if mlp_params is not None:
-            x = global_cond
-            for i, fc in enumerate(self.mlp.fcs):
-                weight = mlp_params[f'fcs.{i}.weight']
-                bias = mlp_params[f'fcs.{i}.bias']
-                x = torch.bmm(x.unsqueeze(1), weight.transpose(1, 2)).squeeze(1) + bias
-                if i < len(self.mlp.fcs) - 1:
-                    x = self.mlp.activation(x)
-            output = x
-        else:
-            output = self.mlp(global_cond)
-        return output
-
+# 配置参数
 @dataclass
 class Args:
     video_path: str= "processed_data"
@@ -98,14 +123,14 @@ class Args:
     obs_horizon: int = 2  # Seems not very important in ManiSkill, 1, 2, 4 work well
     act_horizon: int = 8  # Seems not very important in ManiSkill, 4, 8, 15 work well
     pred_horizon: int = (
-        4  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
+        16  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     )
-    diffusion_step_embed_dim: int = 64  # not very important
+    diffusion_step_embed_dim: int = 32  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [64, 128, 256]
+        default_factory=lambda: [32, 64, 128]
     )  # default setting is about ~4.5M params
     n_groups: int = (
-        8  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+        4  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
     )
 
     # Environment/experiment specific arguments
@@ -135,6 +160,9 @@ class Args:
     Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
     visual_encoder: str = "plain_conv"
     """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
+    prompt: str=""
+    """Prompt for language condition"""
+
 
 def reorder_keys(d, ref_dict):
     out = dict()
@@ -146,18 +174,34 @@ def reorder_keys(d, ref_dict):
                 out[k] = d[k]
     return out
 
+
+prompt2task_dict = {
+    "pick red cube and place on plate.": "human_pick_red_cube_place_plate",
+    "pick blue cube and place on plate.": "human_pick_blue_cube_place_plate",
+    "pick yellow cup and place on plate.": "human_pick_cup_place_plate",
+    "stack red cube on blue cube.": "human_stack_red_cube_on_blue_cube",
+    "stack blue cube on red cube.": "human_stack_blue_cube_on_red_cube",
+    "pick red cube and place on yellow cup.": "human_pick_red_cube_place_cup",
+    "pick blue cube and place on yellow cup .": "human_pick_blue_cube_place_cup",
+    "pick yellow cup and pour and place on plate.": "human_pour_cup",
+    "": "human_pick_red_cube_place_plate"
+}
+
 # 数据集类
 class HypernetDataset(Dataset):
-    def __init__(self, data_path, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj=None):
+    def __init__(self, data_path, videos, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj=None,
+                 use_language=True):
         self.device = device
         self.include_rgb = include_rgb
         self.include_depth = include_depth
+        self.videos = videos
+        self.use_language = use_language
         obs_process_fn = obs_process_fn
         obs_space = obs_space
 
         # Load real robot demonstration data using Diffusion Policy's utility
-        from .hyper_net.utils import load_demo_dataset
-        trajectories = load_demo_dataset(data_path, num_traj=num_traj, concat=False)
+        from diffusion_policy.utils import load_demo_dataset_with_lan
+        trajectories = load_demo_dataset_with_lan(data_path, num_traj=num_traj, concat=False)
         print("Raw trajectory loaded, beginning observation pre-processing...")
 
         # Pre-process observations to align with the environment's observation space
@@ -173,6 +217,13 @@ class HypernetDataset(Dataset):
             obs_traj_dict_list.append(_obs_traj_dict)
         trajectories["observations"] = obs_traj_dict_list
         self.obs_keys = list(_obs_traj_dict.keys())
+
+        # Process language descriptions if available
+        if self.use_language and "language" in trajectories:
+            self.trajectory_language = trajectories["language"]
+        else:
+            # Create empty language placeholders if not available in dataset
+            self.trajectory_language = [args.prompt] * len(trajectories["actions"])
 
         # Pre-process actions
         for i in range(len(trajectories["actions"])):
@@ -218,7 +269,6 @@ class HypernetDataset(Dataset):
         traj_idx, start, end = self.slices[index]
         L, act_dim = self.trajectories["actions"][traj_idx].shape
 
-        # 获取观察序列（保持原始逻辑，但只使用最后一个）
         obs_traj = self.trajectories["observations"][traj_idx]
         obs_seq = {}
         for k, v in obs_traj.items():
@@ -242,9 +292,16 @@ class HypernetDataset(Dataset):
                 and act_seq.shape[0] == self.pred_horizon
         )
 
+        prompt = self.trajectory_language[traj_idx]
+        task_name = prompt2task_dict[prompt]
+        video_idx = random.randint(0, len(self.videos[task_name])-1)
+        video = self.videos[task_name][video_idx].to(self.device, dtype=torch.float32) / 255.0
+
         return {
+            "video": video,
             "observations": obs_seq,
-            "actions": act_seq
+            "actions": act_seq,
+            "language": prompt
         }
 
     def __len__(self):
@@ -261,11 +318,11 @@ class Agent(nn.Module):
         self.act_horizon = args.act_horizon
         self.pred_horizon = args.pred_horizon
         assert (
-            len(env.single_observation_space["state"].shape) == 2
+                len(env.single_observation_space["state"].shape) == 2
         )  # (obs_horizon, obs_dim)
         assert len(env.single_action_space.shape) == 1  # (act_dim, )
         assert (env.single_action_space.high == 1).all() and (
-            env.single_action_space.low == -1
+                env.single_action_space.low == -1
         ).all()
 
         # 从环境获取动作维度
@@ -282,12 +339,14 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         # 初始化你的网络组件
-        fobs_dim = 512
-        mlp_hidden_dim = 1024
-        mlp_num_layers = 8
-        mlp_in_dim = args.obs_horizon * (fobs_dim + obs_state_dim)
-        mlp_out_dim = args.pred_horizon * self.act_dim
-        self.policy = RobotPolicy(mlp_in_dim, mlp_out_dim, mlp_hidden_dim, mlp_num_layers).to(device)
+        fobs_dim = 256
+        ftask_dim = 256
+        weight_dim = 128
+        deriv_hidden_dim = 32
+        driv_num_layers = 2
+        codec_hidden_dim = 64
+        codec_num_layers = 2
+        num_layers = 4
         if args.visual_encoder == 'plain_conv':
             self.obs_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=fobs_dim, pool_feature_map=True
@@ -312,6 +371,38 @@ class Agent(nn.Module):
             self.obs_encoder = SigLIP2Encoder(
                 out_dim=fobs_dim
             ).to(device)
+        # Noise scheduler
+        self.num_diffusion_iters = 100
+        self.noise_scheduler = DDPMScheduler(
+            num_train_timesteps=self.num_diffusion_iters,
+            beta_schedule="squaredcos_cap_v2",
+            clip_sample=True,
+            prediction_type="epsilon",
+        )
+
+        # Video encoder
+        self.video_encoder = VideoEncoder(output_dim=ftask_dim).to(device)
+
+        # Define TargetNets
+        self.noise_pred_net = UNetPolicy(
+            input_dim=self.act_dim,  # act_horizon is not used (U-Net doesn't care)
+            global_cond_dim=self.obs_horizon * (fobs_dim + obs_state_dim),
+            diffusion_step_embed_dim=args.diffusion_step_embed_dim,
+            down_dims=args.unet_dims,
+            n_groups=args.n_groups,
+        ).to(device)
+        self.down_path_target = self.noise_pred_net.unet.down_path_target
+        self.up_path_target = self.noise_pred_net.unet.up_path_target
+
+        # Define Hypernets for each TargetNet
+        self.hypernet_down_path = Hypernet(
+            self.down_path_target, ftask_dim, weight_dim, deriv_hidden_dim, driv_num_layers,
+            codec_hidden_dim, codec_num_layers, num_layers
+        ).to(device)
+        self.hypernet_up_path = Hypernet(
+            self.up_path_target, ftask_dim, weight_dim, deriv_hidden_dim, driv_num_layers,
+            codec_hidden_dim, codec_num_layers, num_layers
+        ).to(device)
 
     def encode_obs(self, obs_seq, eval_mode):
         if self.include_rgb:
@@ -336,21 +427,40 @@ class Agent(nn.Module):
         return feature.flatten(start_dim=1)  # (B, obs_horizon * (D+obs_state_dim))
 
     def compute_loss(self, data_batch):
+        videos = data_batch["video"]
         obs_seq = data_batch["observations"]
         action_seq = data_batch["actions"]
-
         B = obs_seq["state"].shape[0]
-        # observation as FiLM conditioning
-        obs_cond = self.encode_obs(
-            obs_seq, eval_mode=False
-        )  # (B, obs_horizon * obs_dim)
 
-        actions_pred = self.policy(obs_cond, mlp_params=None)
-        actions_pred = actions_pred.view(B, self.pred_horizon, self.act_dim)
-        loss = F.mse_loss(actions_pred, action_seq)
-        return loss
+        ftask = self.video_encoder(videos)
 
-    def get_action(self, obs_seq):
+        # Generate weights for each TargetNet
+        down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
+        up_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
+
+        obs_cond = self.encode_obs(obs_seq, eval_mode=False)
+        noise = torch.randn((B, self.pred_horizon, self.act_dim), device=self.device)
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (B,), device=self.device).long()
+
+        noisy_action_seq = self.noise_scheduler.add_noise(action_seq, noise, timesteps)
+        noise_pred = self.noise_pred_net(
+            noisy_action_seq,
+            timesteps,
+            global_cond=obs_cond,
+            down_path_params=down_path_params,
+            up_path_params=up_path_params
+        )
+        return F.mse_loss(noise_pred, noise)
+
+    def get_action(self, obs_seq, val_videos, prompts):
+        videos = []
+        for prompt in prompts:
+            task_name = prompt2task_dict[prompt]
+            video_idx = random.randint(0, len(val_videos[task_name])-1)
+            video = val_videos[task_name][video_idx].unsqueeze(0).to(self.device, dtype=torch.float32) / 255.0
+            videos.append(video)
+        videos = torch.cat(videos, dim=0)
+
         B = obs_seq["state"].shape[0]
         with torch.no_grad():
             if self.include_rgb:
@@ -358,20 +468,37 @@ class Agent(nn.Module):
             if self.include_depth:
                 obs_seq["depth"] = obs_seq["depth"].permute(0, 1, 4, 2, 3)
 
-            obs_cond = self.encode_obs(
-                obs_seq, eval_mode=False
-            )  # (B, obs_horizon * obs_dim)
+            ftask = self.video_encoder(videos)
 
-            actions = self.policy(obs_cond, mlp_params=None)
-            actions = actions.view(B, self.pred_horizon, self.act_dim)
-            return actions
+            # Generate weights for each TargetNet
+            down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
+            up_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
+
+            obs_cond = self.encode_obs(obs_seq, eval_mode=False)
+            noisy_action_seq = torch.randn((B, self.pred_horizon, self.act_dim), device=self.device)
+
+            for k in self.noise_scheduler.timesteps:
+                noise_pred = self.noise_pred_net(
+                    noisy_action_seq,
+                    k,
+                    global_cond=obs_cond,
+                    down_path_params=down_path_params,
+                    up_path_params=up_path_params
+                )
+                noisy_action_seq = self.noise_scheduler.step(noise_pred, k, noisy_action_seq).prev_sample
+
+        start = self.obs_horizon - 1
+        end = start + self.act_horizon
+        return noisy_action_seq[:, start:end]
 
 
 def save_ckpt(run_name, tag):
     os.makedirs(f"runs/{run_name}/checkpoints", exist_ok=True)
     torch.save(
-        {"agent": agent.state_dict()},
-        f"runs/{run_name}/checkpoints/{tag}.pt"
+        {
+            "agent": agent.state_dict(),
+        },
+        f"runs/{run_name}/checkpoints/{tag}.pt",
     )
 
 
@@ -407,7 +534,7 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # 确定设备
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # 创建环境参数
     env_kwargs = dict(
@@ -471,9 +598,37 @@ if __name__ == "__main__":
     include_depth = tmp_env.unwrapped.obs_mode_struct.visual.depth
     tmp_env.close()
 
-    # 初始化数据集
+    # Load video data from HDF5 files
+    videos = {}
+    train_videos = {}
+    val_videos = {}
+    val_num_per_task = 5
+    video_files = [f for f in os.listdir(args.video_path) if f.endswith(".h5")]
+    num_tasks = len(video_files)
+    print(f"Detected {num_tasks} tasks from HDF5 files.")
+
+    for video_file in video_files:
+        task_name = video_file.replace(".h5", "")
+        hdf5_path = os.path.join(args.video_path, video_file)
+        with h5py.File(hdf5_path, 'r') as h5f:
+            num_videos = len(h5f)
+            videos[task_name] = []
+            for i in range(min(num_videos, 50)):  # videos_per_task=50
+                group = h5f[str(i)]
+                video = group["obs"][:]
+                videos[task_name].append(torch.tensor(video, dtype=torch.uint8))
+
+            # 随机划分 train/val
+            indices = list(range(len(videos[task_name])))
+            random.shuffle(indices)
+            val_indices = indices[:val_num_per_task]
+            train_indices = indices[val_num_per_task:]
+            train_videos[task_name] = [videos[task_name][i] for i in train_indices]
+            val_videos[task_name] = ([videos[task_name][i] for i in val_indices])
+
     dataset = HypernetDataset(
         data_path=args.demo_path,
+        videos=train_videos,
         obs_process_fn=obs_process_fn,
         obs_space=original_obs_space,
         include_rgb=include_rgb,
@@ -496,12 +651,9 @@ if __name__ == "__main__":
 
     # 初始化代理
     agent = Agent(envs, args, device=device)
-
     optimizer = optim.AdamW(
         params=agent.parameters(), lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6
     )
-
-    # 设置学习率调度器（可选）
     lr_scheduler = get_scheduler(
         name="cosine",
         optimizer=optimizer,
@@ -512,11 +664,11 @@ if __name__ == "__main__":
     best_eval_metrics = defaultdict(float)
     timings = defaultdict(float)
 
-    def evaluate_and_save_best(iteration):
+    def evaluate_and_save_best(iteration, val_videos):
         if iteration % args.eval_freq == 0 and iteration != 0:
             last_tick = time.time()
             eval_metrics = evaluate(
-                args.num_eval_episodes, agent, envs, device, args.sim_backend
+                args.num_eval_episodes, agent, envs, device, args.sim_backend, val_videos=val_videos
             )
             timings["eval"] += time.time() - last_tick
 
@@ -564,7 +716,7 @@ if __name__ == "__main__":
         timings["backward"] += time.time() - last_tick
 
         # 评估和日志记录
-        evaluate_and_save_best(iteration)
+        evaluate_and_save_best(iteration, val_videos)
         log_metrics(iteration)
 
         # 定期保存检查点
@@ -576,7 +728,7 @@ if __name__ == "__main__":
         last_tick = time.time()
 
     # 最终评估和日志记录
-    evaluate_and_save_best(args.total_iters)
+    evaluate_and_save_best(args.total_iters, val_videos)
     log_metrics(args.total_iters)
 
     envs.close()

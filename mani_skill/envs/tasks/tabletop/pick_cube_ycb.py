@@ -52,6 +52,7 @@ class PickCubeYCBEnv(BaseEnv):
     agent: Union[Panda, PandaWristCam, Fetch]
     cube_half_size = 0.02
     goal_thresh = 0.06
+    prompt_str = ""
 
     def __init__(
         self,
@@ -191,9 +192,12 @@ class PickCubeYCBEnv(BaseEnv):
 
         import random
         self.source_objs = [self._objs[1], self.cube1, self.cube2]
-        self.target_objs = [self._objs[0], self.cube1, self.cube2]
+        self.target_objs = [self._objs[0], self._objs[1], self.cube1, self.cube2]
         self.source_obj = random.choice(self.source_objs)
-        available_targets = [obj for obj in self.target_objs if obj != self.source_obj]
+        if self.source_obj == self._objs[1]:
+            available_targets = [self._objs[0]]
+        else:
+            available_targets = [obj for obj in self.target_objs if obj != self.source_obj]
         self.target_obj = random.choice(available_targets)
 
         self.is_pour = False
@@ -206,6 +210,8 @@ class PickCubeYCBEnv(BaseEnv):
         self.is_pour = False
         self.source_obj = self.cube1
         self.target_obj = self._objs[0]
+
+        self._get_prompt()
 
     def _after_reconfigure(self, options: dict):
         self.object_zs = []
@@ -260,24 +266,24 @@ class PickCubeYCBEnv(BaseEnv):
 
     def evaluate(self):
         min_dist = float('inf')
-        closest_pair = None
-        for src_obj in self.source_objs:
-            for tgt_obj in self.target_objs:
-                if src_obj != tgt_obj:
-                    obj_to_goal_pos = src_obj.pose.p - tgt_obj.pose.p
-                    dist = torch.linalg.norm(obj_to_goal_pos)
-                    if dist < min_dist:
-                        min_dist = dist
-                        closest_pair = (src_obj, tgt_obj)
-                        obj_to_goal_pos_min = obj_to_goal_pos
+        # closest_pair = None
+        # for src_obj in self.source_objs:
+        #     for tgt_obj in self.target_objs:
+        #         if src_obj != tgt_obj:
+        #             obj_to_goal_pos = src_obj.pose.p - tgt_obj.pose.p
+        #             dist = torch.linalg.norm(obj_to_goal_pos)
+        #             if dist < min_dist:
+        #                 min_dist = dist
+        #                 closest_pair = (src_obj, tgt_obj)
+        #                 obj_to_goal_pos_min = obj_to_goal_pos
+        #
+        # is_obj_placed = torch.tensor([min_dist <= self.goal_thresh])
+        # is_grasped = torch.tensor([any(self.agent.is_grasping(src_obj) for src_obj in self.source_objs)])
+        # obj_to_goal_pos = obj_to_goal_pos_min[0]
 
-        is_obj_placed = torch.tensor([min_dist <= self.goal_thresh])
-        is_grasped = torch.tensor([any(self.agent.is_grasping(src_obj) for src_obj in self.source_objs)])
-        obj_to_goal_pos = obj_to_goal_pos_min[0]
-
-        # obj_to_goal_pos = self.source_obj.pose.p - self.target_obj.pose.p
-        # is_obj_placed = torch.linalg.norm(obj_to_goal_pos, axis=1) <= self.goal_thresh
-        # is_grasped = self.agent.is_grasping(self.source_obj)
+        obj_to_goal_pos = self.source_obj.pose.p - self.target_obj.pose.p
+        is_obj_placed = torch.linalg.norm(obj_to_goal_pos, axis=1) <= self.goal_thresh
+        is_grasped = self.agent.is_grasping(self.source_obj)
         is_robot_static = self.agent.is_static(0.2)
         return dict(
             is_grasped=is_grasped,
@@ -285,6 +291,7 @@ class PickCubeYCBEnv(BaseEnv):
             is_obj_placed=is_obj_placed,
             is_robot_static=is_robot_static,
             success=torch.logical_and(is_obj_placed, is_robot_static),
+            prompt=self.prompt_str,
         )
 
     def encode_string_to_tensor(self, s, max_len):
@@ -295,25 +302,33 @@ class PickCubeYCBEnv(BaseEnv):
             byte_seq = byte_seq[:max_len]
         return torch.tensor([byte_seq], dtype=torch.uint8).cpu()
 
+    def decode_tensor_to_string(self, tensor):
+        byte_seq = tensor.tobytes().rstrip(b'\x00')
+        return byte_seq.decode('utf-8')
+
     def _get_prompt(self):
         if self.source_obj == self.cube1 and self.target_obj == self._objs[0]:
-            prompt_str = "pick red cube and place on plate."
+            self.prompt_str = "pick red cube and place on plate."
         if self.source_obj == self.cube2 and self.target_obj == self._objs[0]:
-            prompt_str = "pick blue cube and place on plate."
+            self.prompt_str = "pick blue cube and place on plate."
         if self.source_obj == self._objs[1] and self.target_obj == self._objs[0] and not self.is_pour:
-            prompt_str = "pick yellow cup and place on plate."
+            self.prompt_str = "pick yellow cup and place on plate."
         if self.source_obj == self.cube1 and self.target_obj == self.cube2:
-            prompt_str = "stack red cube on blue cube."
+            self.prompt_str = "stack red cube on blue cube."
         if self.source_obj == self.cube2 and self.target_obj == self.cube1:
-            prompt_str = "stack blue cube on red cube."
-        if self.source_obj == self._objs[1] and self.target_obj == self.cube1:
-            prompt_str = "pick yellow cup and place on red cube."
-        if self.source_obj == self._objs[1] and self.target_obj == self.cube2:
-            prompt_str = "pick yellow cup and place on blue cube."
+            self.prompt_str = "stack blue cube on red cube."
+        if self.source_obj == self.cube1 and self.target_obj == self._objs[1]:
+            self.prompt_str = "pick red cube and place on yellow cup."
+        if self.source_obj == self.cube2 and self.target_obj == self._objs[1]:
+            self.prompt_str = "pick blue cube and place on yellow cup ."
+        # if self.source_obj == self._objs[1] and self.target_obj == self.cube1:
+        #     self.prompt_str = "pick yellow cup and place on red cube."
+        # if self.source_obj == self._objs[1] and self.target_obj == self.cube2:
+        #     self.prompt_str = "pick yellow cup and place on blue cube."
         if self.source_obj == self._objs[1] and self.target_obj == self._objs[0] and self.is_pour:
-            prompt_str = "pick yellow cup and pour and place on plate."
+            self.prompt_str = "pick yellow cup and pour and place on plate."
 
-        prompt_tensor = self.encode_string_to_tensor(prompt_str, 100)
+        prompt_tensor = self.encode_string_to_tensor(self.prompt_str, 100)
         return prompt_tensor
 
     def _get_obs_extra(self, info: Dict):
@@ -321,7 +336,7 @@ class PickCubeYCBEnv(BaseEnv):
             tcp_pose=self.agent.tcp.pose.raw_pose,
             is_grasped=info["is_grasped"],
             is_obj_placed=info["is_obj_placed"],
-            prompt=self._get_prompt(),
+            # prompt=self._get_prompt(),
         )
         if "state" in self.obs_mode:
             obs.update(
@@ -329,7 +344,7 @@ class PickCubeYCBEnv(BaseEnv):
                 cube_pose=self.source_obj.pose.raw_pose,
                 tcp_to_cube_pos=self.source_obj.pose.p - self.agent.tcp.pose.p,
                 cube_to_goal_pos=self.target_obj.pose.p - self.source_obj.pose.p,
-                prompt=self._get_prompt(),
+                # prompt=self._get_prompt(),
             )
         return obs
 

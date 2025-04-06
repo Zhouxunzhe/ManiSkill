@@ -28,7 +28,7 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
 from .hyper_net.hypernetwork import Hypernet, TargetNet, MLP
-from .hyper_net.evaluate import evaluate
+from .hyper_net.evaluate_mlp import evaluate
 from .hyper_net.make_env import make_eval_envs
 from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
@@ -371,7 +371,7 @@ class Agent(nn.Module):
         driv_num_layers = 4
         codec_hidden_dim = 128
         codec_num_layers = 4
-        num_layers = 16
+        num_layers = 8
         mlp_in_dim = args.obs_horizon * (fobs_dim + obs_state_dim)
         mlp_out_dim = args.pred_horizon * self.act_dim
         self.video_encoder = VideoEncoder(output_dim=ftask_dim).to(device)
@@ -629,7 +629,7 @@ if __name__ == "__main__":
     # 初始化代理
     agent = Agent(envs, args, device=device)
 
-    # 设置优化器（仅优化 video_encoder 和 hypernet）
+    # 设置优化器（仅优化 video_encoder 和 shaohypernet）
     optimizer = optim.AdamW(
         list(agent.video_encoder.parameters()) +\
         list(agent.hypernet.parameters()) +\
