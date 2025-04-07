@@ -26,12 +26,12 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from hyper_net.evaluate_diffusion import evaluate
-from hyper_net.make_env import make_eval_envs
-from hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
+from .hyper_net.evaluate_diffusion import evaluate
+from .hyper_net.make_env import make_eval_envs
+from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
-from hyper_net.hypernetwork_diffusion import UNetPolicy
-from hyper_net.hypernetwork import Hypernet
+from .hyper_net.hypernetwork_diffusion import UNetPolicy
+from .hyper_net.hypernetwork import Hypernet
 from diffusers.optimization import get_scheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
@@ -342,11 +342,11 @@ class Agent(nn.Module):
         fobs_dim = 256
         ftask_dim = 256
         weight_dim = 128
-        deriv_hidden_dim = 32
-        driv_num_layers = 2
-        codec_hidden_dim = 64
-        codec_num_layers = 2
-        num_layers = 4
+        deriv_hidden_dim = 64
+        driv_num_layers = 4
+        codec_hidden_dim = 128
+        codec_num_layers = 4
+        num_layers = 8
         if args.visual_encoder == 'plain_conv':
             self.obs_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=fobs_dim, pool_feature_map=True
@@ -446,7 +446,7 @@ class Agent(nn.Module):
         noise_pred = self.noise_pred_net(
             noisy_action_seq,
             timesteps,
-            global_cond=obs_cond,
+            global_cond=obs_cond.detach(),
             down_path_params=down_path_params,
             up_path_params=up_path_params
         )
@@ -481,7 +481,7 @@ class Agent(nn.Module):
                 noise_pred = self.noise_pred_net(
                     noisy_action_seq,
                     k,
-                    global_cond=obs_cond,
+                    global_cond=obs_cond.detach(),
                     down_path_params=down_path_params,
                     up_path_params=up_path_params
                 )

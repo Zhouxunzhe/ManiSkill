@@ -207,9 +207,11 @@ class PickCubeYCBEnv(BaseEnv):
             self.source_obj = self._objs[1]
             self.target_obj = self._objs[0]
 
-        self.is_pour = False
-        self.source_obj = self.cube1
-        self.target_obj = self._objs[0]
+        multi_task = False
+        if not multi_task:
+            self.is_pour = False
+            self.source_obj = self.cube1
+            self.target_obj = self._objs[0]
 
         self._get_prompt()
 
@@ -265,25 +267,28 @@ class PickCubeYCBEnv(BaseEnv):
                 raise NotImplementedError(self.robot_uids)
 
     def evaluate(self):
-        min_dist = float('inf')
-        # closest_pair = None
-        # for src_obj in self.source_objs:
-        #     for tgt_obj in self.target_objs:
-        #         if src_obj != tgt_obj:
-        #             obj_to_goal_pos = src_obj.pose.p - tgt_obj.pose.p
-        #             dist = torch.linalg.norm(obj_to_goal_pos)
-        #             if dist < min_dist:
-        #                 min_dist = dist
-        #                 closest_pair = (src_obj, tgt_obj)
-        #                 obj_to_goal_pos_min = obj_to_goal_pos
-        #
-        # is_obj_placed = torch.tensor([min_dist <= self.goal_thresh])
-        # is_grasped = torch.tensor([any(self.agent.is_grasping(src_obj) for src_obj in self.source_objs)])
-        # obj_to_goal_pos = obj_to_goal_pos_min[0]
+        multi_eval = False
+        if multi_eval:
+            min_dist = float('inf')
+            closest_pair = None
+            for src_obj in self.source_objs:
+                for tgt_obj in self.target_objs:
+                    if src_obj != tgt_obj:
+                        obj_to_goal_pos = src_obj.pose.p - tgt_obj.pose.p
+                        dist = torch.linalg.norm(obj_to_goal_pos)
+                        if dist < min_dist:
+                            min_dist = dist
+                            closest_pair = (src_obj, tgt_obj)
+                            obj_to_goal_pos_min = obj_to_goal_pos
 
-        obj_to_goal_pos = self.source_obj.pose.p - self.target_obj.pose.p
-        is_obj_placed = torch.linalg.norm(obj_to_goal_pos, axis=1) <= self.goal_thresh
-        is_grasped = self.agent.is_grasping(self.source_obj)
+            is_obj_placed = torch.tensor([min_dist <= self.goal_thresh])
+            is_grasped = torch.tensor([any(self.agent.is_grasping(src_obj) for src_obj in self.source_objs)])
+            obj_to_goal_pos = obj_to_goal_pos_min[0]
+        else:
+            obj_to_goal_pos = self.source_obj.pose.p - self.target_obj.pose.p
+            is_obj_placed = torch.linalg.norm(obj_to_goal_pos, axis=1) <= self.goal_thresh
+            is_grasped = self.agent.is_grasping(self.source_obj)
+
         is_robot_static = self.agent.is_static(0.2)
         return dict(
             is_grasped=is_grasped,
