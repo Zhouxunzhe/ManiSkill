@@ -37,50 +37,50 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
 
 
-# class VideoEncoder(nn.Module):
-#     def __init__(self, output_dim=64):
-#         super().__init__()
-#         self.resnet = models.resnet18(pretrained=True)
-#         self.resnet.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-#         self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
-#         self.fc = nn.Linear(512, output_dim)
-#
-#     def forward(self, video):
-#         batch, T, H, W, C = video.shape
-#         video = video.permute(0, 1, 4, 2, 3)
-#         video = video.view(batch * T, C, H, W)
-#         features = self.resnet(video)
-#         features = features.view(batch, T, 512)
-#         features = features.mean(dim=1)
-#         task_feature = self.fc(features)
-#         return task_feature
-
 class VideoEncoder(nn.Module):
     def __init__(self, output_dim=64):
         super().__init__()
-        # Replace ResNet with PlainConv
-        self.cnn = PlainConv(
-            in_channels=3,
-            out_dim=512,  # Match the dimension of ResNet18 features
-            pool_feature_map=True,
-            last_act=True
-        )
-        # Final FC layer similar to original
+        self.resnet = models.resnet18(pretrained=True)
+        self.resnet.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
         self.fc = nn.Linear(512, output_dim)
 
     def forward(self, video):
-        # Handle the same input format as the original encoder
         batch, T, H, W, C = video.shape
-        video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
-        video = video.reshape(batch * T, C, H, W)
-        # Extract features using PlainConv instead of ResNet
-        features = self.cnn(video)
-        # Reshape and pool temporal dimension, same as original
+        video = video.permute(0, 1, 4, 2, 3)
+        video = video.view(batch * T, C, H, W)
+        features = self.resnet(video)
         features = features.view(batch, T, 512)
         features = features.mean(dim=1)
-        # Final projection
         task_feature = self.fc(features)
         return task_feature
+
+# class VideoEncoder(nn.Module):
+#     def __init__(self, output_dim=64):
+#         super().__init__()
+#         # Replace ResNet with PlainConv
+#         self.cnn = PlainConv(
+#             in_channels=3,
+#             out_dim=512,  # Match the dimension of ResNet18 features
+#             pool_feature_map=True,
+#             last_act=True
+#         )
+#         # Final FC layer similar to original
+#         self.fc = nn.Linear(512, output_dim)
+#
+#     def forward(self, video):
+#         # Handle the same input format as the original encoder
+#         batch, T, H, W, C = video.shape
+#         video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
+#         video = video.reshape(batch * T, C, H, W)
+#         # Extract features using PlainConv instead of ResNet
+#         features = self.cnn(video)
+#         # Reshape and pool temporal dimension, same as original
+#         features = features.view(batch, T, 512)
+#         features = features.mean(dim=1)
+#         # Final projection
+#         task_feature = self.fc(features)
+#         return task_feature
 
 # 配置参数
 @dataclass
@@ -343,10 +343,10 @@ class Agent(nn.Module):
         ftask_dim = 256
         weight_dim = 128
         deriv_hidden_dim = 64
-        driv_num_layers = 4
+        driv_num_layers = 3
         codec_hidden_dim = 128
-        codec_num_layers = 4
-        num_layers = 8
+        codec_num_layers = 3
+        num_layers = 3
         if args.visual_encoder == 'plain_conv':
             self.obs_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=fobs_dim, pool_feature_map=True
@@ -404,6 +404,13 @@ class Agent(nn.Module):
             codec_hidden_dim, codec_num_layers, num_layers
         ).to(device)
 
+        # Add He initialization
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
     def encode_obs(self, obs_seq, eval_mode):
         if self.include_rgb:
             rgb = obs_seq["rgb"].float() / 255.0  # (B, obs_horizon, 3*k, H, W)
@@ -436,7 +443,7 @@ class Agent(nn.Module):
 
         # Generate weights for each TargetNet
         down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
-        up_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
+        up_path_params = self.hypernet_up_path.forward_blocks(ftask)[-1]
 
         obs_cond = self.encode_obs(obs_seq, eval_mode=False)
         noise = torch.randn((B, self.pred_horizon, self.act_dim), device=self.device)
@@ -446,7 +453,7 @@ class Agent(nn.Module):
         noise_pred = self.noise_pred_net(
             noisy_action_seq,
             timesteps,
-            global_cond=obs_cond.detach(),
+            global_cond=obs_cond,
             down_path_params=down_path_params,
             up_path_params=up_path_params
         )
@@ -472,7 +479,7 @@ class Agent(nn.Module):
 
             # Generate weights for each TargetNet
             down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
-            up_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
+            up_path_params = self.hypernet_up_path.forward_blocks(ftask)[-1]
 
             obs_cond = self.encode_obs(obs_seq, eval_mode=False)
             noisy_action_seq = torch.randn((B, self.pred_horizon, self.act_dim), device=self.device)
@@ -481,7 +488,7 @@ class Agent(nn.Module):
                 noise_pred = self.noise_pred_net(
                     noisy_action_seq,
                     k,
-                    global_cond=obs_cond.detach(),
+                    global_cond=obs_cond,
                     down_path_params=down_path_params,
                     up_path_params=up_path_params
                 )
@@ -626,6 +633,8 @@ if __name__ == "__main__":
             train_videos[task_name] = [videos[task_name][i] for i in train_indices]
             val_videos[task_name] = ([videos[task_name][i] for i in val_indices])
 
+    # val_videos = train_videos
+
     dataset = HypernetDataset(
         data_path=args.demo_path,
         videos=train_videos,
@@ -651,14 +660,15 @@ if __name__ == "__main__":
 
     # 初始化代理
     agent = Agent(envs, args, device=device)
+    torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=1.0)
     optimizer = optim.AdamW(
         params=agent.parameters(), lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6
     )
     lr_scheduler = get_scheduler(
         name="cosine",
         optimizer=optimizer,
-        num_warmup_steps=500,
-        num_training_steps=args.total_iters
+        num_warmup_steps=1000,
+        num_training_steps=args.save_freq
     )
 
     best_eval_metrics = defaultdict(float)

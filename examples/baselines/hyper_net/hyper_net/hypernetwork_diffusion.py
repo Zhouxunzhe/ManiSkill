@@ -428,6 +428,7 @@ class DownPathTargetNet(TargetNet):
         """
         return weight_dicts[0]  # Since there's only one submodule (down_path)
 
+
 class UpPathTargetNet(TargetNet):
     def __init__(self, up_path):
         """
@@ -469,6 +470,12 @@ class UpPathTargetNet(TargetNet):
 
             x = upsample(x)  # Upsample doesn't have parameters to replace
 
+        # Define vmap_conv for the final convolution
+        def single_conv(x, weight, bias, padding=None, stride=None):
+            return F.conv1d(x, weight, bias, padding=padding, stride=stride)
+
+        vmap_conv = torch.vmap(single_conv, in_dims=(0, 0, 0, None, None))
+
         # Final conv
         if len(self.up_path.final_conv) >= 2:
             # Apply first conv block
@@ -476,14 +483,25 @@ class UpPathTargetNet(TargetNet):
             if f'{prefix_fc1}block.0.weight' in params and f'{prefix_fc1}block.0.bias' in params:
                 fc1_weight = params[f'{prefix_fc1}block.0.weight']
                 fc1_bias = params[f'{prefix_fc1}block.0.bias']
-                x = F.conv1d(x, fc1_weight, fc1_bias,
-                             padding=self.up_path.final_conv[0].block[0].padding,
-                             stride=self.up_path.final_conv[0].block[0].stride)
+
+                # Use vmap_conv for batched convolution
+                x = vmap_conv(
+                    x,
+                    fc1_weight,
+                    fc1_bias,
+                    self.up_path.final_conv[0].block[0].padding,
+                    self.up_path.final_conv[0].block[0].stride
+                )
+
                 if f'{prefix_fc1}block.1.weight' in params and f'{prefix_fc1}block.1.bias' in params:
                     norm_weight = params[f'{prefix_fc1}block.1.weight']
                     norm_bias = params[f'{prefix_fc1}block.1.bias']
+                    # Ensure norm_weight and norm_bias are [num_channels] by taking the mean across batch
+                    if norm_weight.dim() > 1 and norm_weight.shape[0] == x.shape[0]:
+                        norm_weight = norm_weight.mean(dim=0)
+                        norm_bias = norm_bias.mean(dim=0)
                     x = F.group_norm(x, self.up_path.final_conv[0].block[1].num_groups,
-                                   norm_weight, norm_bias)
+                                     norm_weight, norm_bias)
                 else:
                     x = self.up_path.final_conv[0].block[1](x)
                 x = self.up_path.final_conv[0].block[2](x)  # Mish activation
@@ -495,7 +513,15 @@ class UpPathTargetNet(TargetNet):
             if f'{prefix_fc2}weight' in params and f'{prefix_fc2}bias' in params:
                 fc2_weight = params[f'{prefix_fc2}weight']
                 fc2_bias = params[f'{prefix_fc2}bias']
-                x = F.conv1d(x, fc2_weight, fc2_bias)
+
+                # Use vmap_conv for batched convolution
+                x = vmap_conv(
+                    x,
+                    fc2_weight,
+                    fc2_bias,
+                    0,  # padding
+                    1  # stride
+                )
             else:
                 x = self.up_path.final_conv[1](x)
 
@@ -505,6 +531,7 @@ class UpPathTargetNet(TargetNet):
         """
         Apply a conditional residual block with custom parameters
         """
+
         def single_conv(x, weight, bias, padding=None, stride=None):
             return F.conv1d(x, weight, bias, padding=padding, stride=stride)
 
@@ -527,7 +554,7 @@ class UpPathTargetNet(TargetNet):
                 # Ensure norm_weight and norm_bias are [num_channels] by taking the mean across batch
                 if norm_weight.dim() > 1 and norm_weight.shape[0] == x.shape[0]:
                     norm_weight = norm_weight.mean(dim=0)  # [128, 64] -> [64]
-                    norm_bias = norm_bias.mean(dim=0)      # [128, 64] -> [64]
+                    norm_bias = norm_bias.mean(dim=0)  # [128, 64] -> [64]
                 x_norm = F.group_norm(x_norm, original_module.blocks[0].block[1].num_groups,
                                       norm_weight, norm_bias)
             else:
@@ -540,7 +567,10 @@ class UpPathTargetNet(TargetNet):
         if f'{prefix}cond_encoder.1.weight' in params and f'{prefix}cond_encoder.1.bias' in params:
             linear_weight = params[f'{prefix}cond_encoder.1.weight']
             linear_bias = params[f'{prefix}cond_encoder.1.bias']
-            embed = F.linear(cond, linear_weight, linear_bias)
+
+            # Replace F.linear with torch.bmm to handle batched weights correctly
+            embed = torch.bmm(cond.unsqueeze(1), linear_weight.transpose(1, 2)).squeeze(1) + linear_bias
+
             embed = original_module.cond_encoder[0](embed)  # Apply Mish
             embed = embed.reshape(embed.shape[0], 2, original_module.out_channels, 1)
         else:
@@ -568,7 +598,7 @@ class UpPathTargetNet(TargetNet):
                 # Ensure norm_weight and norm_bias are [num_channels] by taking the mean across batch
                 if norm_weight.dim() > 1 and norm_weight.shape[0] == x.shape[0]:
                     norm_weight = norm_weight.mean(dim=0)  # [128, 64] -> [64]
-                    norm_bias = norm_bias.mean(dim=0)      # [128, 64] -> [64]
+                    norm_bias = norm_bias.mean(dim=0)  # [128, 64] -> [64]
                 x_norm = F.group_norm(x_norm, original_module.blocks[1].block[1].num_groups,
                                       norm_weight, norm_bias)
             else:

@@ -191,8 +191,10 @@ class PickCubeYCBEnv(BaseEnv):
         )
 
         import random
-        self.source_objs = [self._objs[1], self.cube1, self.cube2]
-        self.target_objs = [self._objs[0], self._objs[1], self.cube1, self.cube2]
+        # self.source_objs = [self._objs[1], self.cube1, self.cube2]
+        # self.target_objs = [self._objs[0], self._objs[1], self.cube1, self.cube2]
+        self.source_objs = [self.cube1, self.cube2]
+        self.target_objs = [self._objs[0], self.cube1, self.cube2]
         self.source_obj = random.choice(self.source_objs)
         if self.source_obj == self._objs[1]:
             available_targets = [self._objs[0]]
