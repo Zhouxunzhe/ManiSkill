@@ -37,7 +37,8 @@ python -m examples.baselines.hyper_net.train_hypernet_diffusion --env-id PickCub
   --log_freq 1000 --eval_freq 20000 --save_freq 5000 --num_eval_episodes 25 --num_eval_envs 1 \
   --obs_mode rgb+depth --exp_name PickCubeYCB-multi_task_4-hypernet_diffusion-320 \
   --video-path /home/engram/zhouxunzhe/ManiSkill/examples/baselines/hyper_net/processed_data \
-  --wandb_project_name PickCubeYCB-multi_task_4-hypernet_diffusion-320
+  --track --wandb_project_name PickCubeYCB-multi_task_4-hypernet_diffusion-320 \
+  --video_encoder_backbone efficientnet --video_temporal_modeling transformer
 
 # Train MLP
 # python -m examples.baselines.hyper_net.train_mlp --env-id PickCubeYCB-v1 \

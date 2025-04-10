@@ -49,3 +49,4 @@ htmlcov/
 /wandb/
 /figures/test/
 *h5
+/examples/baselines/hyper_net/processed_data/

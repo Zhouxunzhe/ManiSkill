@@ -662,7 +662,8 @@ class ConditionalUnet1D(nn.Module):
                  diffusion_step_embed_dim=256,
                  down_dims=[256, 512, 1024],
                  kernel_size=5,
-                 n_groups=8
+                 n_groups=8,
+                 ftask_dim=None
                  ):
         """
         Modified UNet that uses separate down and up path networks
@@ -687,7 +688,10 @@ class ConditionalUnet1D(nn.Module):
             nn.Linear(dsed * 4, dsed),
         )
 
-        cond_dim = dsed + global_cond_dim
+        if ftask_dim is not None:
+            cond_dim = dsed + global_cond_dim + ftask_dim
+        else:
+            cond_dim = dsed + global_cond_dim
         all_dims = [input_dim] + list(down_dims)
 
         # Create down path and up path networks
@@ -701,12 +705,18 @@ class ConditionalUnet1D(nn.Module):
         self.down_path_target = DownPathTargetNet(self.down_path)
         self.up_path_target = UpPathTargetNet(self.up_path)
 
+        if ftask_dim is not None:
+            self.attn = nn.MultiheadAttention(all_dims[0], num_heads=8)
+            self.ftask_proj = nn.Linear(ftask_dim, all_dims[0])
+
     def forward(self,
                 sample: torch.Tensor,
                 timestep: Union[torch.Tensor, float, int],
                 global_cond=None,
                 down_path_params=None,
-                up_path_params=None):
+                up_path_params=None,
+                ftask=None
+                ):
         """
         Forward pass with optional parameter replacement for down and up paths
 
@@ -735,6 +745,8 @@ class ConditionalUnet1D(nn.Module):
             global_feature = torch.cat([
                 global_feature, global_cond
             ], axis=-1)
+            if ftask is not None:
+                global_feature = torch.cat([global_feature, ftask], dim=-1)
 
         # Down path (with optional parameter replacement)
         if down_path_params is not None:
@@ -754,6 +766,12 @@ class ConditionalUnet1D(nn.Module):
         # (B,C,T) -> (B,T,C)
         x = x.moveaxis(-1, -2)
 
+        if ftask is not None:
+            ftask_emb = self.ftask_proj(ftask).unsqueeze(0)
+            x = x.permute(1, 0, 2)  # (T, B, C)
+            x, _ = self.attn(x, ftask_emb, ftask_emb)
+            x = x.permute(1, 0, 2)  # (B, C, T)
+
         return x
 
 
@@ -765,19 +783,21 @@ class UNetPolicy(nn.Module):
                  diffusion_step_embed_dim=256,
                  down_dims=[256, 512, 1024],
                  kernel_size=5,
-                 n_groups=8):
+                 n_groups=8,
+                 ftask_dim=None
+                 ):
         super().__init__()
 
         self.unet = ConditionalUnet1D(
             input_dim, global_cond_dim, diffusion_step_embed_dim,
-            down_dims, kernel_size, n_groups
+            down_dims, kernel_size, n_groups, ftask_dim
         )
 
         n_params = sum(p.numel() for p in self.unet.parameters())
         print(f"UNetPolicy parameters: {n_params / 1e6:.2f}M")
 
     def forward(self, sample, timestep, global_cond=None,
-                down_path_params=None, up_path_params=None):
+                down_path_params=None, up_path_params=None, ftask=None):
         """
         Forward pass with optional parameter replacement
 
@@ -785,7 +805,7 @@ class UNetPolicy(nn.Module):
         and up_path components separately.
         """
         return self.unet(sample, timestep, global_cond,
-                         down_path_params, up_path_params)
+                         down_path_params, up_path_params, ftask)
 
     def get_down_path_parameters(self):
         """Returns parameter state dict for down path"""

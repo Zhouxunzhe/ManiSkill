@@ -37,50 +37,104 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
 
 
+# Enhanced Video Encoder with Task-specific Feature Extraction
 class VideoEncoder(nn.Module):
-    def __init__(self, output_dim=64):
+    def __init__(self, output_dim=64, backbone='resnet18', dropout_rate=0.3):
         super().__init__()
-        self.resnet = models.resnet18(pretrained=True)
-        self.resnet.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
-        self.fc = nn.Linear(512, output_dim)
+        # Select backbone architecture
+        if backbone == 'resnet18':
+            self.backbone = models.resnet18(pretrained=True)
+            feature_dim = 512
+        elif backbone == 'resnet34':
+            self.backbone = models.resnet34(pretrained=True)
+            feature_dim = 512
+        elif backbone == 'resnet50':
+            self.backbone = models.resnet50(pretrained=True)
+            feature_dim = 2048
+        else:
+            self.backbone = models.resnet18(pretrained=True)
+            feature_dim = 512
+
+        # Remove the final FC layer from backbone
+        self.backbone = nn.Sequential(*list(self.backbone.children())[:-1])
+
+        # 3D Conv for capturing spatial-temporal patterns
+        self.conv3d = nn.Sequential(
+            nn.Conv3d(feature_dim, 256, kernel_size=(3, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(256, 128, kernel_size=(3, 1, 1), padding=(1, 0, 0)),
+            nn.BatchNorm3d(128),
+            nn.ReLU(inplace=True)
+        )
+
+        # Temporal attention mechanism
+        self.temporal_attention = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+
+        # Transformer encoder for capturing long-range dependencies
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=128,
+                nhead=4,
+                dim_feedforward=256,
+                dropout=dropout_rate
+            ),
+            num_layers=2
+        )
+
+        # Task-specific feature extraction
+        self.task_fc = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, output_dim)
+        )
+
+        # Auxiliary classifier for task discrimination
+        self.task_classifier = nn.Sequential(
+            nn.Linear(output_dim, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(32, 8)  # Assuming 8 is the number of tasks
+        )
 
     def forward(self, video):
         batch, T, H, W, C = video.shape
-        video = video.permute(0, 1, 4, 2, 3)
-        video = video.view(batch * T, C, H, W)
-        features = self.resnet(video)
-        features = features.view(batch, T, 512)
-        features = features.mean(dim=1)
-        task_feature = self.fc(features)
-        return task_feature
 
-# class VideoEncoder(nn.Module):
-#     def __init__(self, output_dim=64):
-#         super().__init__()
-#         # Replace ResNet with PlainConv
-#         self.cnn = PlainConv(
-#             in_channels=3,
-#             out_dim=512,  # Match the dimension of ResNet18 features
-#             pool_feature_map=True,
-#             last_act=True
-#         )
-#         # Final FC layer similar to original
-#         self.fc = nn.Linear(512, output_dim)
-#
-#     def forward(self, video):
-#         # Handle the same input format as the original encoder
-#         batch, T, H, W, C = video.shape
-#         video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
-#         video = video.reshape(batch * T, C, H, W)
-#         # Extract features using PlainConv instead of ResNet
-#         features = self.cnn(video)
-#         # Reshape and pool temporal dimension, same as original
-#         features = features.view(batch, T, 512)
-#         features = features.mean(dim=1)
-#         # Final projection
-#         task_feature = self.fc(features)
-#         return task_feature
+        # Process each frame with the backbone CNN
+        video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
+        video = video.reshape(batch * T, C, H, W)
+        features = self.backbone(video)  # [B*T, D, 1, 1]
+        features = features.view(batch, T, -1, 1, 1)  # [B, T, D, 1, 1]
+
+        # Process with 3D convolutions to capture temporal patterns
+        features = features.permute(0, 2, 1, 3, 4)  # [B, D, T, 1, 1]
+        features = self.conv3d(features)  # [B, 128, T, 1, 1]
+        features = features.squeeze(-1).squeeze(-1)  # [B, 128, T]
+        features = features.permute(0, 2, 1)  # [B, T, 128]
+
+        # Apply temporal attention
+        attention_weights = self.temporal_attention(features)  # [B, T, 1]
+        attended_features = features * attention_weights
+
+        # Transformer for capturing complex temporal relationships
+        trans_input = attended_features.permute(1, 0, 2)  # [T, B, 128]
+        trans_output = self.transformer(trans_input)  # [T, B, 128]
+        trans_output = trans_output.permute(1, 0, 2)  # [B, T, 128]
+
+        # Global pooling and task feature extraction
+        global_features = trans_output.mean(dim=1)  # [B, 128]
+        task_features = self.task_fc(global_features)  # [B, output_dim]
+
+        # Get classification logits for auxiliary task
+        task_logits = self.task_classifier(task_features)
+
+        return task_features, task_logits
 
 # 配置参数
 @dataclass
@@ -121,7 +175,7 @@ class Args:
     lr: float = 1e-4
     """the learning rate of the diffusion policy"""
     obs_horizon: int = 2  # Seems not very important in ManiSkill, 1, 2, 4 work well
-    act_horizon: int = 8  # Seems not very important in ManiSkill, 4, 8, 15 work well
+    act_horizon: int = 4  # Seems not very important in ManiSkill, 4, 8, 15 work well
     pred_horizon: int = (
         16  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     )
@@ -186,6 +240,13 @@ prompt2task_dict = {
     "pick yellow cup and pour and place on plate.": "human_pour_cup",
     "": "human_pick_red_cube_place_plate"
 }
+
+prompt2label_dict = {}
+label_counter = 0
+for prompt in prompt2task_dict.keys():
+    if prompt not in prompt2label_dict:
+        prompt2label_dict[prompt] = label_counter
+        label_counter += 1
 
 # 数据集类
 class HypernetDataset(Dataset):
@@ -296,12 +357,14 @@ class HypernetDataset(Dataset):
         task_name = prompt2task_dict[prompt]
         video_idx = random.randint(0, len(self.videos[task_name])-1)
         video = self.videos[task_name][video_idx].to(self.device, dtype=torch.float32) / 255.0
+        label = prompt2label_dict[prompt]
 
         return {
             "video": video,
             "observations": obs_seq,
             "actions": act_seq,
-            "language": prompt
+            "language": prompt,
+            "label": label,
         }
 
     def __len__(self):
@@ -390,6 +453,7 @@ class Agent(nn.Module):
             diffusion_step_embed_dim=args.diffusion_step_embed_dim,
             down_dims=args.unet_dims,
             n_groups=args.n_groups,
+            # ftask_dim=ftask_dim,
         ).to(device)
         self.down_path_target = self.noise_pred_net.unet.down_path_target
         self.up_path_target = self.noise_pred_net.unet.up_path_target
@@ -410,6 +474,8 @@ class Agent(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+
+        self.loss_dict = {}
 
     def encode_obs(self, obs_seq, eval_mode):
         if self.include_rgb:
@@ -437,10 +503,101 @@ class Agent(nn.Module):
         videos = data_batch["video"]
         obs_seq = data_batch["observations"]
         action_seq = data_batch["actions"]
+        labels = data_batch["label"].to(self.device)
         B = obs_seq["state"].shape[0]
 
-        ftask = self.video_encoder(videos)
+        # Get task features and task classification logits from video encoder
+        ftask, task_logits = self.video_encoder(videos)
 
+        # 1. Classification Loss - helps video encoder learn task-discriminative features
+        cls_loss = F.cross_entropy(task_logits, labels)
+
+        # 2. Triplet Loss - ensures features from same task are closer than different tasks
+        def batch_hard_triplet_loss(features, labels, margin=0.5):
+            # L2 normalize features for cosine similarity
+            features = F.normalize(features, p=2, dim=1)
+
+            # Compute pairwise distances using cosine distance (1 - similarity)
+            similarity = torch.mm(features, features.t())
+            distances = 1.0 - similarity
+
+            # Create mask for positive and negative pairs
+            same_identity_mask = torch.eq(labels.unsqueeze(0), labels.unsqueeze(1))
+            negative_mask = ~same_identity_mask
+
+            # Remove self-pairs from positive pairs
+            positive_mask = same_identity_mask.clone()
+            positive_mask.fill_diagonal_(False)
+
+            # Find hardest positive and negative for each anchor
+            hardest_positive_dist = torch.max(distances * positive_mask.float(), dim=1)[0]
+            hardest_negative_dist = torch.min(distances * negative_mask.float() +
+                                              (1 - negative_mask.float()) * 1e6, dim=1)[0]
+
+            # Compute triplet loss with margin
+            loss = F.relu(hardest_positive_dist - hardest_negative_dist + margin)
+
+            return loss.mean()
+
+        triplet_loss = batch_hard_triplet_loss(ftask, labels)
+
+        # 3. Inter-class variance loss - maximize distance between class centroids
+        def inter_class_variance_loss(features, labels):
+            # L2 normalize features
+            features = F.normalize(features, p=2, dim=1)
+
+            unique_labels = torch.unique(labels)
+            if len(unique_labels) <= 1:
+                return torch.tensor(0.0, device=features.device)
+
+            centroids = []
+            for label in unique_labels:
+                mask = (labels == label)
+                if mask.sum() > 0:
+                    centroid = features[mask].mean(dim=0)
+                    # Normalize centroid
+                    centroid = F.normalize(centroid, p=2, dim=0)
+                    centroids.append(centroid)
+
+            centroids = torch.stack(centroids)
+
+            # Compute cosine similarity matrix between centroids
+            similarity = torch.mm(centroids, centroids.t())
+
+            # Create mask to exclude self-similarity
+            mask = 1.0 - torch.eye(len(centroids), device=features.device)
+
+            # We want to minimize similarity (maximize negative similarity)
+            # between different classes
+            loss = (similarity * mask).sum() / (len(centroids) * (len(centroids) - 1))
+
+            return loss  # No need for negative sign since we want to minimize similarity
+
+        inter_class_loss = inter_class_variance_loss(ftask, labels)
+
+        # 4. Intra-class compactness loss - minimize variance within each class
+        def intra_class_compactness_loss(features, labels):
+            unique_labels = torch.unique(labels)
+            total_variance = 0.0
+            class_count = 0
+
+            for label in unique_labels:
+                mask = (labels == label)
+                if mask.sum() > 1:  # Need at least 2 samples
+                    class_features = features[mask]
+                    centroid = class_features.mean(dim=0, keepdim=True)
+                    variance = torch.mean(torch.sum((class_features - centroid) ** 2, dim=1))
+                    total_variance += variance
+                    class_count += 1
+
+            if class_count == 0:
+                return torch.tensor(0.0, device=self.device)
+
+            return total_variance / class_count
+
+        intra_class_loss = intra_class_compactness_loss(ftask, labels)
+
+        # 5. Diffusion model loss - original noise prediction loss
         # Generate weights for each TargetNet
         down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
         up_path_params = self.hypernet_up_path.forward_blocks(ftask)[-1]
@@ -455,9 +612,31 @@ class Agent(nn.Module):
             timesteps,
             global_cond=obs_cond,
             down_path_params=down_path_params,
-            up_path_params=up_path_params
+            up_path_params=up_path_params,
+            # ftask=ftask,
         )
-        return F.mse_loss(noise_pred, noise)
+        diffusion_loss = F.mse_loss(noise_pred, noise)
+
+        # Combine all losses with weighting factors
+        total_loss = (
+                diffusion_loss +
+                0.5 * cls_loss +
+                0.5 * triplet_loss +
+                0.005 * inter_class_loss +
+                0.05 * intra_class_loss
+        )
+
+        # Track individual losses for monitoring
+        self.loss_dict = {
+            'diffusion_loss': diffusion_loss.item(),
+            'classification_loss': cls_loss.item(),
+            'triplet_loss': triplet_loss.item(),
+            'inter_class_loss': inter_class_loss.item(),
+            'intra_class_loss': intra_class_loss.item(),
+            'total_loss': total_loss.item()
+        }
+
+        return total_loss
 
     def get_action(self, obs_seq, val_videos, prompts):
         videos = []
@@ -475,7 +654,7 @@ class Agent(nn.Module):
             if self.include_depth:
                 obs_seq["depth"] = obs_seq["depth"].permute(0, 1, 4, 2, 3)
 
-            ftask = self.video_encoder(videos)
+            ftask, task_logits = self.video_encoder(videos)
 
             # Generate weights for each TargetNet
             down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
@@ -490,7 +669,8 @@ class Agent(nn.Module):
                     k,
                     global_cond=obs_cond,
                     down_path_params=down_path_params,
-                    up_path_params=up_path_params
+                    up_path_params=up_path_params,
+                    # ftask=ftask
                 )
                 noisy_action_seq = self.noise_scheduler.step(noise_pred, k, noisy_action_seq).prev_sample
 
@@ -541,7 +721,7 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     # 确定设备
-    device = torch.device("cuda:1" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # 创建环境参数
     env_kwargs = dict(
@@ -702,6 +882,9 @@ if __name__ == "__main__":
                 "charts/learning_rate", optimizer.param_groups[0]["lr"], iteration
             )
             writer.add_scalar("losses/total_loss", total_loss.item(), iteration)
+            # Log these losses if desired
+            for k, v in agent.loss_dict.items():
+                writer.add_scalar(f"losses/{k}", v, iteration)
             for k, v in timings.items():
                 writer.add_scalar(f"time/{k}", v, iteration)
 
