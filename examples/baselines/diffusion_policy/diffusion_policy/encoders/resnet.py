@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torchvision.models import resnet18, resnet34, resnet50, resnet101
+import torchvision.models as models
 
 
 def make_mlp(in_channels, mlp_channels, act_builder=nn.ReLU, last_act=True):
@@ -18,84 +17,79 @@ def make_mlp(in_channels, mlp_channels, act_builder=nn.ReLU, last_act=True):
 class ResNetEncoder(nn.Module):
     def __init__(
             self,
+            in_channels=3,
             out_dim=256,
-            model_type='resnet50',  # 'resnet18', 'resnet34', 'resnet50', 'resnet101'
-            pretrained=False,
-            pool_feature_map=False,
+            pool_feature_map=True,
             last_act=True,
-            in_channels=4,  # 新增参数，指定输入通道数，默认为 4（RGBD）
+            freeze_backbone=False,
+            pretrained=True
     ):
         super().__init__()
+        self.out_dim = out_dim
 
-        # Load ResNet model based on type
-        if model_type == 'resnet18':
-            self.backbone = resnet18(weights='IMAGENET1K_V1' if pretrained else None)
-            resnet_dim = 512
-        elif model_type == 'resnet34':
-            self.backbone = resnet34(weights='IMAGENET1K_V1' if pretrained else None)
-            resnet_dim = 512
-        elif model_type == 'resnet50':
-            self.backbone = resnet50(weights='IMAGENET1K_V1' if pretrained else None)
-            resnet_dim = 2048
-        elif model_type == 'resnet101':
-            self.backbone = resnet101(weights='IMAGENET1K_V1' if pretrained else None)
-            resnet_dim = 2048
-        else:
-            raise ValueError(f"Unknown model type: {model_type}")
+        # 加载预训练的ResNet18
+        self.backbone = models.resnet18(pretrained=pretrained)
 
-        # 修改第一层卷积以适应 4 通道输入
-        if in_channels != 3:  # 如果输入通道数不是 3，则调整 conv1
-            original_conv1 = self.backbone.conv1
-            new_conv1 = nn.Conv2d(
-                in_channels=in_channels,  # 输入通道数改为 4
-                out_channels=original_conv1.out_channels,  # 输出通道保持不变
-                kernel_size=original_conv1.kernel_size,  # 卷积核大小不变
-                stride=original_conv1.stride,  # 步幅不变
-                padding=original_conv1.padding,  # 填充不变
-                bias=original_conv1.bias is not None
+        # 处理输入通道数不是3的情况
+        if in_channels != 3:
+            self.backbone.conv1 = nn.Conv2d(
+                in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
             )
-            if pretrained:  # 如果使用预训练权重
-                # 将原始权重复制到新卷积层的前 3 个通道
-                with torch.no_grad():
-                    new_conv1.weight[:, :3, :, :] = original_conv1.weight
-                    # 第 4 通道的权重可以用零初始化，或者复制某个通道（如 R/G/B 的平均值）
-                    new_conv1.weight[:, 3:, :, :] = original_conv1.weight[:, :1, :, :].mean(dim=1, keepdim=True)
-            self.backbone.conv1 = new_conv1
 
-        # Remove the final classification layer
-        self.backbone = nn.Sequential(*(list(self.backbone.children())[:-1]))
+        # 移除原始ResNet的最后一个全连接层
+        self.feature_dim = self.backbone.fc.in_features
+        self.backbone = nn.Sequential(*list(self.backbone.children())[:-1])
 
-        # Freeze ResNet parameters if using pretrained model
-        if pretrained:
+        # 冻结主干网络参数
+        if freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
-        # Define projection layer from ResNet dimension to desired output dimension
+        # 添加自定义的投影层
         if pool_feature_map:
-            self.pool = nn.AdaptiveMaxPool2d((1, 1))
-            self.fc = make_mlp(resnet_dim, [out_dim], last_act=last_act)
+            # 特征图已经通过ResNet的全局平均池化被池化为(batch_size, feature_dim, 1, 1)
+            self.fc = make_mlp(self.feature_dim, [out_dim], last_act=last_act)
         else:
-            self.pool = None
-            self.fc = make_mlp(resnet_dim, [out_dim], last_act=last_act)
+            # 如果需要使用未池化的特征图，需要移除ResNet的平均池化层
+            # 但这通常不是必要的，因为ResNet已经内置了平均池化
+            raise ValueError("ResNet已经包含池化层，请设置pool_feature_map=True")
 
-        self.out_dim = out_dim
+        self.reset_parameters()
 
     def reset_parameters(self):
-        for name, module in self.named_modules():
-            if isinstance(module, (nn.Linear, nn.Conv2d)):
+        # 只重置我们添加的全连接层
+        for name, module in self.fc.named_modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
     def forward(self, image):
-        # Ensure input is properly normalized for ResNet (224x224)
-        if image.shape[-1] != 224 or image.shape[-2] != 224:
-            image = F.interpolate(image, size=(224, 224), mode='bicubic')
+        # 通过ResNet主干网络
+        features = self.backbone(image)
+        # ResNet的输出已经是池化后的向量，形状为(batch_size, feature_dim, 1, 1)
+        features = features.flatten(1)
+        # 通过投影层
+        output = self.fc(features)
+        return output
 
-        # Get ResNet features
-        x = self.backbone(image)
+    def get_feature_extractor(self):
+        """返回特征提取器部分，用于迁移学习"""
+        return self.backbone
 
-        if self.pool is not None:
-            x = self.pool(x)
-        x = x.flatten(1)
-        x = self.fc(x)
-        return x
+    def unfreeze_layers(self, start_layer=None):
+        """解冻指定层之后的所有层，用于微调"""
+        if start_layer is None:
+            # 解冻所有层
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            return
+
+        # 解冻指定层后的层
+        found_layer = False
+        for name, module in self.backbone.named_modules():
+            if start_layer in name:
+                found_layer = True
+            if found_layer:
+                for param in module.parameters():
+                    param.requires_grad = True

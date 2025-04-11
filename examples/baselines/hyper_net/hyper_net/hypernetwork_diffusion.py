@@ -804,6 +804,15 @@ class UNetPolicy(nn.Module):
         This allows a hypernetwork to generate parameters for the down_path
         and up_path components separately.
         """
+        if ftask is not None:
+            # Project ftask to match dimensions with global_cond and sample
+            ftask_proj = F.normalize(ftask, p=2, dim=1)
+
+            # Condition the sample with ftask
+            if global_cond is not None:
+                # Combine task features with global condition
+                global_cond = torch.cat([global_cond, ftask_proj], dim=1)
+
         return self.unet(sample, timestep, global_cond,
                          down_path_params, up_path_params, ftask)
 
