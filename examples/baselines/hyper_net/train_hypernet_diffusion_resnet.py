@@ -76,7 +76,7 @@ class VideoEncoder(nn.Module):
         # Remove the final FC layer from backbone
         self.backbone = nn.Sequential(*list(self.backbone.children())[:-1])
 
-        # 3D Conv for capturing spatial-temporal patterns
+        # 3D Conv for capturing temporal patterns
         self.conv3d = nn.Sequential(
             nn.Conv3d(feature_dim, 256, kernel_size=(3, 1, 1), padding=(1, 0, 0)),
             nn.BatchNorm3d(256),
@@ -129,47 +129,299 @@ class VideoEncoder(nn.Module):
         )
 
     def forward(self, video):
+        # video shape: [B, T, H, W, C]
         batch, T, H, W, C = video.shape
 
-        # Process each frame with the backbone CNN
-        video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
+        # Prepare storage for batch results
+        all_task_features = []
+        all_task_logits = []
+        all_contrastive_features = []
 
-        video_features = []
-        for i in range(batch):
-            single_video = video[i]
-            video_feature = self.backbone(single_video)
-            video_features.append(video_feature)
-        features = torch.cat(video_features, dim=0)
-        features = features.view(batch, T, -1, 1, 1)  # [B, T, D, 1, 1]
+        # Process each video sequence independently
+        for b in range(batch):
+            single_video = video[b]  # [T, H, W, C]
+            single_video = single_video.permute(0, 3, 1, 2)
 
-        # Process with 3D convolutions to capture temporal patterns
-        features = features.permute(0, 2, 1, 3, 4)  # [B, D, T, 1, 1]
-        features = self.conv3d(features)  # [B, 128, T, 1, 1]
-        features = features.squeeze(-1).squeeze(-1)  # [B, 128, T]
-        features = features.permute(0, 2, 1)  # [B, T, 128]
+            # Extract features through backbone
+            frame_features = self.backbone(single_video).squeeze(-1).squeeze(-1)  # [T, feature_dim]
 
-        # Apply temporal attention
-        attention_weights = self.temporal_attention(features)  # [B, T, 1]
-        attended_features = features * attention_weights
+            # Combine all frame features
+            video_features = frame_features.unsqueeze(0)  # [1, T, feature_dim]
 
-        # Transformer for capturing complex temporal relationships
-        trans_input = attended_features.permute(1, 0, 2)  # [T, B, 128]
-        trans_output = self.transformer(trans_input)  # [T, B, 128]
-        trans_output = trans_output.permute(1, 0, 2)  # [B, T, 128]
+            # Apply 3D convolution to video features
+            # Adjust dimensions for 3D convolution input format
+            features_3d = video_features.permute(0, 2, 1).unsqueeze(-1).unsqueeze(-1)  # [1, feature_dim, T, 1, 1]
+            conv_features = self.conv3d(features_3d)  # [1, 128, T, 1, 1]
+            conv_features = conv_features.squeeze(-1).squeeze(-1).permute(0, 2, 1)  # [1, T, 128]
 
-        # Global pooling and task feature extraction
-        # global_features = trans_output.mean(dim=1)  # [B, 128]
-        # task_features = self.task_fc(global_features)  # [B, output_dim]
-        global_features = self.feature_norm(trans_output.mean(dim=1))  # [B, 128]
-        task_features = self.task_fc(global_features)  # [B, output_dim]
+            # Apply temporal attention
+            attn_weights = self.temporal_attention(conv_features)  # [1, T, 1]
+            attended_features = conv_features * attn_weights  # [1, T, 128]
 
-        contrastive_features = self.contrastive_projector(task_features)
-        contrastive_features = F.normalize(contrastive_features, p=2, dim=1)
+            # Use Transformer for temporal modeling
+            # Adjust to Transformer input format
+            trans_input = attended_features.permute(1, 0, 2)  # [T, 1, 128]
+            trans_output = self.transformer(trans_input)  # [T, 1, 128]
+            trans_output = trans_output.permute(1, 0, 2)  # [1, T, 128]
 
-        # Get classification logits for auxiliary task
-        task_logits = self.task_classifier(task_features)
+            # Global feature
+            global_feature = self.feature_norm(torch.mean(trans_output, dim=1))  # [1, 128]
 
-        return task_features, task_logits, contrastive_features
+            # Task feature
+            task_feature = self.task_fc(global_feature)  # [1, output_dim]
+
+            # Auxiliary classifier
+            task_logit = self.task_classifier(task_feature)  # [1, num_classes]
+
+            # Contrastive learning projection
+            contrastive_feature = self.contrastive_projector(task_feature)  # [1, output_dim]
+            contrastive_feature = F.normalize(contrastive_feature, p=2, dim=1)  # Normalize
+
+            # Store results
+            all_task_features.append(task_feature)
+            all_task_logits.append(task_logit)
+            all_contrastive_features.append(contrastive_feature)
+
+        # Combine results from all videos
+        batch_task_features = torch.cat(all_task_features, dim=0)  # [B, output_dim]
+        batch_task_logits = torch.cat(all_task_logits, dim=0)  # [B, num_classes]
+        batch_contrastive_features = torch.cat(all_contrastive_features, dim=0)  # [B, output_dim]
+
+        return batch_task_features, batch_task_logits, batch_contrastive_features
+
+
+# Data augmentation function for videos
+def augment_video_batch(videos, strength=0.2):
+    """
+    Apply consistent augmentations to each video in the batch.
+
+    Args:
+        videos: Tensor of shape [B, T, H, W, C]
+        strength: Augmentation strength factor
+
+    Returns:
+        Augmented videos tensor of same shape
+    """
+    B, T, H, W, C = videos.shape
+    augmented = videos.clone()
+
+    for b in range(B):
+        # Apply consistent augmentation for each video
+        if torch.rand(1).item() < 0.5:  # 50% chance of horizontal flip
+            augmented[b] = torch.flip(augmented[b], [2])
+
+        # Random brightness and contrast
+        if torch.rand(1).item() < 0.8:  # 80% chance of adjustment
+            brightness = 1.0 + (torch.rand(1).item() * 2 - 1) * strength
+            contrast = 1.0 + (torch.rand(1).item() * 2 - 1) * strength
+            augmented[b] = torch.clamp(contrast * (augmented[b] - 0.5) + 0.5 + brightness - 1, 0, 1)
+
+    return augmented
+
+
+# Feature visualization function
+def visualize_features(features, labels, step, writer):
+    """
+    Create t-SNE visualization of feature embeddings and log to TensorBoard.
+
+    Args:
+        features: Feature embeddings tensor
+        labels: Corresponding class labels tensor
+        step: Current training step
+        writer: TensorBoard SummaryWriter instance
+    """
+    try:
+        from sklearn.manifold import TSNE
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        # Convert to CPU numpy arrays
+        features_np = features.detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+
+        # t-SNE dimensionality reduction
+        tsne = TSNE(n_components=2, random_state=42)
+        features_2d = tsne.fit_transform(features_np)
+
+        # Create scatter plot
+        plt.figure(figsize=(10, 8))
+        for label in np.unique(labels_np):
+            mask = labels_np == label
+            plt.scatter(features_2d[mask, 0], features_2d[mask, 1], label=f'Task {label}')
+
+        plt.legend()
+        plt.title(f'Feature Space Visualization - Step {step}')
+
+        # Save to TensorBoard
+        writer.add_figure('feature_visualization', plt.gcf(), step)
+    except Exception as e:
+        print(f"Failed to generate feature visualization: {e}")
+
+
+# Dynamic loss weighting based on training progress
+def get_loss_weights(current_step, total_steps):
+    """
+    Dynamically adjust loss weights based on training progress.
+
+    Args:
+        current_step: Current training step
+        total_steps: Total number of training steps
+
+    Returns:
+        Dictionary of loss component weights
+    """
+    progress = current_step / total_steps
+
+    if progress < 0.2:  # First 20% emphasizes feature learning
+        return {
+            'diffusion': 0.5,
+            'cls': 0.2,
+            'contrastive': 1.0,
+            'center': 0.5,
+            'inter_class': 0.5
+        }
+    elif progress < 0.5:  # Middle phase balances components
+        return {
+            'diffusion': 0.8,
+            'cls': 0.1,
+            'contrastive': 0.5,
+            'center': 0.3,
+            'inter_class': 0.3
+        }
+    else:  # Later phase emphasizes diffusion model
+        return {
+            'diffusion': 1.0,
+            'cls': 0.05,
+            'contrastive': 0.2,
+            'center': 0.1,
+            'inter_class': 0.1
+        }
+
+
+# Advanced NT-Xent contrastive loss with label information
+def nt_xent_loss(features, labels, temperature=0.1):
+    """
+    Compute NT-Xent contrastive loss using label information.
+
+    Args:
+        features: Feature embeddings tensor [B, D]
+        labels: Class labels tensor [B]
+        temperature: Temperature scaling factor
+
+    Returns:
+        Computed contrastive loss
+    """
+    batch_size = features.shape[0]
+    device = features.device
+
+    # Create similarity matrix
+    features_norm = F.normalize(features, dim=1)
+    similarity_matrix = torch.matmul(features_norm, features_norm.T) / temperature
+
+    # Create mask for positive pairs (same label)
+    positive_mask = torch.eq(labels.unsqueeze(0), labels.unsqueeze(1)).float()
+    # Remove self-comparisons
+    identity_mask = torch.eye(batch_size, device=device)
+    positive_mask = positive_mask - identity_mask
+
+    # For numerical stability
+    logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
+    logits = similarity_matrix - logits_max.detach()
+
+    # Compute log probabilities
+    exp_logits = torch.exp(logits)
+    log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+
+    # Compute mean of log-likelihood over positive pairs
+    mean_log_prob_pos = (positive_mask * log_prob).sum(1) / (positive_mask.sum(1) + 1e-8)
+
+    # Final loss
+    loss = -mean_log_prob_pos.mean()
+    return loss
+
+
+# Center loss for minimizing intra-class variance
+def center_loss(features, labels):
+    """
+    Compute center loss to minimize intra-class variance.
+
+    Args:
+        features: Feature embeddings tensor [B, D]
+        labels: Class labels tensor [B]
+
+    Returns:
+        Computed center loss
+    """
+    unique_labels = torch.unique(labels)
+    device = features.device
+
+    # Calculate per-class centroids
+    centers = {}
+    for label in unique_labels:
+        mask = (labels == label)
+        if mask.sum() > 0:
+            centers[label.item()] = features[mask].mean(0, keepdim=True)
+
+    # Calculate distances to centroids
+    loss = torch.tensor(0., device=device)
+    sample_count = 0
+
+    for label in unique_labels:
+        mask = (labels == label)
+        if mask.sum() > 0:
+            center = centers[label.item()]
+            class_features = features[mask]
+            # Squared Euclidean distance to center
+            dist = torch.sum((class_features - center) ** 2, dim=1)
+            loss += torch.sum(dist)
+            sample_count += mask.sum()
+
+    if sample_count > 0:
+        loss = loss / sample_count
+
+    return loss
+
+
+# Inter-class distance loss to maximize separation between classes
+def inter_class_distance_loss(features, labels):
+    """
+    Compute inter-class distance loss to maximize class separation.
+
+    Args:
+        features: Feature embeddings tensor [B, D]
+        labels: Class labels tensor [B]
+
+    Returns:
+        Computed inter-class distance loss
+    """
+    unique_labels = torch.unique(labels)
+    device = features.device
+
+    if len(unique_labels) <= 1:
+        return torch.tensor(0., device=device)
+
+    # Calculate class centroids
+    centers = []
+    for label in unique_labels:
+        mask = (labels == label)
+        if mask.sum() > 0:
+            center = features[mask].mean(0)
+            # Normalize centroid
+            center = F.normalize(center, p=2, dim=0)
+            centers.append(center)
+
+    centers = torch.stack(centers)
+
+    # Calculate centroid similarity matrix
+    similarity = torch.mm(centers, centers.t())
+
+    # Create mask to exclude self-similarity
+    mask = 1.0 - torch.eye(len(centers), device=device)
+
+    # Calculate average similarity (to be minimized)
+    loss = (similarity * mask).sum() / (len(centers) * (len(centers) - 1))
+
+    return loss
 
 # 配置参数
 @dataclass
@@ -476,6 +728,15 @@ class Agent(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
         self.loss_dict = {}
+        # Add TensorBoard writer to the agent for feature visualization
+        self.writer = None
+
+        # Feature memory bank for tracking class centroids
+        self.feature_memory = {}
+        self.memory_momentum = 0.9  # For EMA updates of class centroids
+
+        # Initialize class centers if any exist
+        self.class_centers = {}
 
     def encode_obs(self, obs_seq, eval_mode):
         if self.include_rgb:
@@ -499,142 +760,47 @@ class Agent(nn.Module):
         )  # (B, obs_horizon, D+obs_state_dim)
         return feature.flatten(start_dim=1)  # (B, obs_horizon * (D+obs_state_dim))
 
-    def compute_loss(self, data_batch):
+    def compute_loss(self, data_batch, current_step=0, total_steps=100000):
+        """
+        Compute combined loss for training with dynamic loss weighting.
+
+        Args:
+            data_batch: Dictionary containing training batch data
+            current_step: Current training iteration
+            total_steps: Total training iterations
+
+        Returns:
+            Total combined loss
+        """
         videos = data_batch["video"]
         obs_seq = data_batch["observations"]
         action_seq = data_batch["actions"]
         labels = data_batch["label"].to(self.device)
         B = obs_seq["state"].shape[0]
 
+        # Apply data augmentation during training
+        if self.training:
+            videos = augment_video_batch(videos)
+
         # Get task features and task classification logits from video encoder
         ftask, task_logits, contrastive_features = self.video_encoder(videos)
 
-        def augment_features(features, strength=0.1):
-            # Add small random noise during training to improve robustness
-            noise = torch.randn_like(features) * strength
-            return features + noise
+        # Get dynamic loss weights based on training progress
+        weights = get_loss_weights(current_step, total_steps)
 
-        # Apply augmentation during training
-        contrastive_features = augment_features(contrastive_features)
-
-        # 1. Classification Loss - helps video encoder learn task-discriminative features
+        # 1. Classification Loss
         cls_loss = F.cross_entropy(task_logits, labels)
 
-        # 2. Triplet Loss - ensures features from same task are closer than different tasks
-        def batch_hard_triplet_loss(features, labels, margin=0.5):
-            # L2 normalize features for cosine similarity
-            features = F.normalize(features, p=2, dim=1)
+        # 2. Contrastive Loss using NT-Xent
+        contrastive_loss = nt_xent_loss(contrastive_features, labels)
 
-            # Compute pairwise distances using cosine distance (1 - similarity)
-            similarity = torch.mm(features, features.t())
-            distances = 1.0 - similarity
+        # 3. Center Loss - minimize intra-class variance
+        intra_class_loss = center_loss(contrastive_features, labels)
 
-            # Create mask for positive and negative pairs
-            same_identity_mask = torch.eq(labels.unsqueeze(0), labels.unsqueeze(1))
-            negative_mask = ~same_identity_mask
+        # 4. Inter-class Distance Loss - maximize class separation
+        inter_class_loss = inter_class_distance_loss(contrastive_features, labels)
 
-            # Remove self-pairs from positive pairs
-            positive_mask = same_identity_mask.clone()
-            positive_mask.fill_diagonal_(False)
-
-            # Find hardest positive and negative for each anchor
-            hardest_positive_dist = torch.max(distances * positive_mask.float(), dim=1)[0]
-            hardest_negative_dist = torch.min(distances * negative_mask.float() +
-                                              (1 - negative_mask.float()) * 1e6, dim=1)[0]
-
-            # Compute triplet loss with margin
-            loss = F.relu(hardest_positive_dist - hardest_negative_dist + margin)
-
-            return loss.mean()
-
-        triplet_loss = batch_hard_triplet_loss(contrastive_features, labels)
-
-        # 3. Inter-class variance loss - maximize distance between class centroids
-        def inter_class_variance_loss(features, labels):
-            # L2 normalize features
-            features = F.normalize(features, p=2, dim=1)
-
-            unique_labels = torch.unique(labels)
-            if len(unique_labels) <= 1:
-                return torch.tensor(0.0, device=features.device)
-
-            centroids = []
-            for label in unique_labels:
-                mask = (labels == label)
-                if mask.sum() > 0:
-                    centroid = features[mask].mean(dim=0)
-                    # Normalize centroid
-                    centroid = F.normalize(centroid, p=2, dim=0)
-                    centroids.append(centroid)
-
-            centroids = torch.stack(centroids)
-
-            # Compute cosine similarity matrix between centroids
-            similarity = torch.mm(centroids, centroids.t())
-
-            # Create mask to exclude self-similarity
-            mask = 1.0 - torch.eye(len(centroids), device=features.device)
-
-            # We want to minimize similarity (maximize negative similarity)
-            # between different classes
-            loss = (similarity * mask).sum() / (len(centroids) * (len(centroids) - 1))
-
-            return loss  # No need for negative sign since we want to minimize similarity
-
-        inter_class_loss = inter_class_variance_loss(contrastive_features, labels)
-
-        # 4. Intra-class compactness loss - minimize variance within each class
-        def intra_class_compactness_loss(features, labels):
-            unique_labels = torch.unique(labels)
-            total_variance = 0.0
-            class_count = 0
-
-            for label in unique_labels:
-                mask = (labels == label)
-                if mask.sum() > 1:  # Need at least 2 samples
-                    class_features = features[mask]
-                    centroid = class_features.mean(dim=0, keepdim=True)
-                    variance = torch.mean(torch.sum((class_features - centroid) ** 2, dim=1))
-                    total_variance += variance
-                    class_count += 1
-
-            if class_count == 0:
-                return torch.tensor(0.0, device=self.device)
-
-            return total_variance / class_count
-
-        intra_class_loss = intra_class_compactness_loss(contrastive_features, labels)
-
-        def info_nce_loss(features, labels, temperature=0.07):
-            features = F.normalize(features, dim=1)
-            similarity_matrix = torch.matmul(features, features.T) / temperature
-
-            # Create masks for positive pairs
-            labels = labels.contiguous().view(-1, 1)
-            mask_positive = torch.eq(labels, labels.T).float()
-
-            # Remove self-contrast cases
-            mask_self = torch.eye(mask_positive.shape[0], device=mask_positive.device)
-            mask_positive = mask_positive - mask_self
-
-            # For numerical stability
-            logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
-            logits = similarity_matrix - logits_max.detach()
-
-            # Compute log_prob
-            exp_logits = torch.exp(logits)
-            log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
-
-            # Compute mean of log-likelihood over positive pairs
-            mean_log_prob_pos = (mask_positive * log_prob).sum(1) / mask_positive.sum(1)
-
-            # Loss
-            loss = -mean_log_prob_pos.mean()
-            return loss
-
-        contrastive_loss = info_nce_loss(contrastive_features, labels)
-
-        # 5. Diffusion model loss - original noise prediction loss
+        # 5. Diffusion model noise prediction loss
         # Generate weights for each TargetNet
         down_path_params = self.hypernet_down_path.forward_blocks(contrastive_features)[-1]
         up_path_params = self.hypernet_up_path.forward_blocks(contrastive_features)[-1]
@@ -650,38 +816,51 @@ class Agent(nn.Module):
             global_cond=obs_cond,
             down_path_params=down_path_params,
             up_path_params=up_path_params,
-            # ftask=contrastive_features,
         )
         diffusion_loss = F.mse_loss(noise_pred, noise)
 
-        # Combine all losses with weighting factors
+        # Combine all losses with dynamic weighting
         total_loss = (
-                diffusion_loss +
-                0.02 * cls_loss +
-                0.5 * triplet_loss +
-                0.1 * contrastive_loss +  # Add contrastive loss with higher weight
-                0.5 * inter_class_loss +
-                0.1 * intra_class_loss
+                weights['diffusion'] * diffusion_loss +
+                weights['cls'] * cls_loss +
+                weights['contrastive'] * contrastive_loss +
+                weights['center'] * intra_class_loss +
+                weights['inter_class'] * inter_class_loss
         )
 
         # Track individual losses for monitoring
         self.loss_dict = {
             'diffusion_loss': diffusion_loss.item(),
             'classification_loss': cls_loss.item(),
-            'triplet_loss': triplet_loss.item(),
             'contrastive_loss': contrastive_loss.item(),
+            'center_loss': intra_class_loss.item(),
             'inter_class_loss': inter_class_loss.item(),
-            'intra_class_loss': intra_class_loss.item(),
             'total_loss': total_loss.item()
         }
+
+        # Periodically visualize feature space (every 1000 steps)
+        if current_step % 1000 == 0 and hasattr(self, 'writer'):
+            visualize_features(contrastive_features.detach(), labels.detach(), current_step, self.writer)
 
         return total_loss
 
     def get_action(self, obs_seq, val_videos, prompts):
+        """
+        Generate action based on observation sequence, video demonstrations and prompts.
+
+        Args:
+            obs_seq: Current observation sequence
+            val_videos: Dictionary of video demonstrations for each task
+            prompts: Task prompts corresponding to each environment in the batch
+
+        Returns:
+            Predicted actions
+        """
         videos = []
         for prompt in prompts:
             task_name = prompt2task_dict[prompt]
-            video_idx = random.randint(0, len(val_videos[task_name])-1)
+            # Select a random video from available demonstrations for this task
+            video_idx = random.randint(0, len(val_videos[task_name]) - 1)
             video = val_videos[task_name][video_idx].unsqueeze(0).to(self.device, dtype=torch.float32) / 255.0
             videos.append(video)
         videos = torch.cat(videos, dim=0)
@@ -693,19 +872,20 @@ class Agent(nn.Module):
             if self.include_depth:
                 obs_seq["depth"] = obs_seq["depth"].permute(0, 1, 4, 2, 3)
 
+            # Extract features from demonstration videos
             ftask, task_logits, contrastive_features = self.video_encoder(videos)
 
-            # Generate weights for each TargetNet
-            # down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
-            # up_path_params = self.hypernet_up_path.forward_blocks(ftask)[-1]
-
-            # Use contrastive features for hypernetwork
+            # Generate weights for hypernetworks using the contrastive features
             down_path_params = self.hypernet_down_path.forward_blocks(contrastive_features)[-1]
             up_path_params = self.hypernet_up_path.forward_blocks(contrastive_features)[-1]
 
+            # Encode current observations
             obs_cond = self.encode_obs(obs_seq, eval_mode=True)
+
+            # Initialize noisy action sequence
             noisy_action_seq = torch.randn((B, self.pred_horizon, self.act_dim), device=self.device)
 
+            # Progressive denoising
             for k in self.noise_scheduler.timesteps:
                 noise_pred = self.noise_pred_net(
                     noisy_action_seq,
@@ -713,13 +893,13 @@ class Agent(nn.Module):
                     global_cond=obs_cond,
                     down_path_params=down_path_params,
                     up_path_params=up_path_params,
-                    # ftask=contrastive_features
                 )
                 noisy_action_seq = self.noise_scheduler.step(noise_pred, k, noisy_action_seq).prev_sample
 
-        start = self.obs_horizon - 1
-        end = start + self.act_horizon
-        return noisy_action_seq[:, start:end]
+            # Extract the relevant action horizon
+            start = self.obs_horizon - 1
+            end = start + self.act_horizon
+            return noisy_action_seq[:, start:end]
 
 
 def save_ckpt(run_name, tag):
@@ -952,19 +1132,23 @@ if __name__ == "__main__":
             for k, v in timings.items():
                 writer.add_scalar(f"time/{k}", v, iteration)
 
-    # 训练循环
+    # Training loop
     agent.train()
     pbar = tqdm(total=args.total_iters)
     last_tick = time.time()
+
+    # Assign writer to agent for visualization
+    agent.writer = writer
+
     for iteration, data_batch in enumerate(train_dataloader):
         timings["data_loading"] += time.time() - last_tick
 
-        # 前向传播和损失计算
+        # Forward pass and loss calculation
         last_tick = time.time()
-        total_loss = agent.compute_loss(data_batch)
+        total_loss = agent.compute_loss(data_batch, current_step=iteration, total_steps=args.total_iters)
         timings["forward"] += time.time() - last_tick
 
-        # 反向传播
+        # Backward pass
         last_tick = time.time()
         optimizer.zero_grad()
         total_loss.backward()
@@ -972,11 +1156,44 @@ if __name__ == "__main__":
         lr_scheduler.step()
         timings["backward"] += time.time() - last_tick
 
-        # 评估和日志记录
+        # Evaluation and logging
         evaluate_and_save_best(iteration, val_videos)
         log_metrics(iteration)
 
-        # 定期保存检查点
+        # Periodically update feature memory bank
+        if iteration % 100 == 0 and hasattr(agent, 'feature_memory'):
+            # Extract features from current batch
+            with torch.no_grad():
+                _, _, features = agent.video_encoder(data_batch["video"])
+                labels = data_batch["label"].to(device)
+
+                # Update feature memory bank
+                for i in range(features.shape[0]):
+                    label = labels[i].item()
+                    if label not in agent.feature_memory:
+                        agent.feature_memory[label] = features[i].detach()
+                    else:
+                        # Exponential moving average update
+                        agent.feature_memory[label] = (
+                                agent.memory_momentum * agent.feature_memory[label] +
+                                (1 - agent.memory_momentum) * features[i].detach()
+                        )
+
+            # Log feature statistics
+            if iteration % 1000 == 0:
+                # Calculate and log inter-class distances
+                if len(agent.feature_memory) > 1:
+                    centers = torch.stack(list(agent.feature_memory.values()))
+                    centers_norm = F.normalize(centers, p=2, dim=1)
+                    similarity = torch.mm(centers_norm, centers_norm.t())
+
+                    # Mask out diagonal
+                    mask = 1.0 - torch.eye(len(centers), device=device)
+                    avg_sim = (similarity * mask).sum() / (len(centers) * (len(centers) - 1))
+
+                    writer.add_scalar("metrics/inter_class_similarity", avg_sim.item(), iteration)
+
+        # Periodic checkpoint saving
         if args.save_freq is not None and iteration % args.save_freq == 0:
             save_ckpt(run_name, str(iteration))
 
@@ -984,7 +1201,7 @@ if __name__ == "__main__":
         pbar.set_postfix({"loss": total_loss.item()})
         last_tick = time.time()
 
-    # 最终评估和日志记录
+    # Final evaluation and logging
     evaluate_and_save_best(args.total_iters, val_videos)
     log_metrics(args.total_iters)
 
