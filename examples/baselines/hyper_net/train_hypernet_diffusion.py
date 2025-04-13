@@ -56,106 +56,56 @@ for prompt in prompt2task_dict.keys():
         label_counter += 1
 
 
-class VideoTemporalAugmenter:
-    def __init__(self, temporal_mask_ratio=0.2, frame_dropout_ratio=0.2,
-                 temporal_shuffle_prob=0.5):
-        self.temporal_mask_ratio = temporal_mask_ratio
-        self.frame_dropout_ratio = frame_dropout_ratio
-        self.temporal_shuffle_prob = temporal_shuffle_prob
-
-    def __call__(self, video):
-        """
-        Apply semantic-preserving temporal augmentations
-        video: [B, T, H, W, C]
-        """
-        B, T, H, W, C = video.shape
-        augmented_video = video.clone()
-
-        # Apply one augmentation randomly - this preserves semantic content better
-        aug_choice = random.randint(0, 3)
-
-        if aug_choice == 0 and T > 2:
-            # Temporal masking - mask random frames (self-supervision task)
-            mask_size = max(1, int(T * self.temporal_mask_ratio))
-            start_idx = random.randint(0, T - mask_size)
-            # Instead of zeroing, we can use a more subtle masking
-            mask = torch.ones_like(augmented_video)
-            mask[:, start_idx:start_idx + mask_size] = 0.3  # Dim but not completely zero
-            augmented_video = augmented_video * mask
-
-        elif aug_choice == 1 and T > 2:
-            # Frame dropout - drop frames and repeat previous
-            # This preserves semantic content by copying from neighboring frames
-            drop_frames = torch.rand(T) < self.frame_dropout_ratio
-            if drop_frames.sum() > 0:  # Only if we have frames to drop
-                for t in range(1, T):
-                    if drop_frames[t]:
-                        augmented_video[:, t] = augmented_video[:, t - 1]
-
-        elif aug_choice == 2 and T > 4:
-            # Temporal shuffling of small chunks
-            # Keep chunks small to preserve local temporal structures
-            chunk_size = max(2, T // 5)
-            num_chunks = T // chunk_size
-            if num_chunks > 1:
-                chunks = [augmented_video[:, i * chunk_size:(i + 1) * chunk_size].clone()
-                          for i in range(num_chunks)]
-                # Only shuffle some chunks, not all
-                num_to_shuffle = max(2, num_chunks // 2)
-                indices_to_shuffle = random.sample(range(num_chunks), num_to_shuffle)
-                shuffle_indices = torch.randperm(num_to_shuffle).tolist()
-
-                for i, idx in enumerate(indices_to_shuffle):
-                    new_idx = indices_to_shuffle[shuffle_indices[i]]
-                    augmented_video[:, idx * chunk_size:(idx + 1) * chunk_size] = chunks[new_idx]
-
-        elif aug_choice == 3 and T > 2:
-            # Temporal subsampling and interpolation
-            # This preserves semantic meaning while changing temporal resolution
-            keep_fraction = random.uniform(0.6, 0.9)  # Keep 60-90% of frames
-            keep_count = max(2, int(T * keep_fraction))
-            keep_indices = sorted(random.sample(range(T), keep_count))
-
-            sampled_frames = augmented_video[:, keep_indices]
-
-            # Reshape for interpolation
-            B_new, T_new, H, W, C = sampled_frames.shape
-            sampled_frames = sampled_frames.reshape(B_new, T_new, C, H, W).permute(0, 2, 1, 3, 4)
-
-            # Interpolate back to original length using trilinear interpolation
-            interpolated = F.interpolate(
-                sampled_frames,
-                size=(T, H, W),
-                mode='trilinear',
-                align_corners=False
-            )
-
-            # Reshape back to original format
-            augmented_video = interpolated.permute(0, 2, 3, 4, 1)
-
-        return augmented_video
-
-
-class VideoEncoder(nn.Module):
-    def __init__(self, output_dim=128, projection_dim=64, temperature=0.07):
+class VideoMAEEncoder(nn.Module):
+    def __init__(self, output_dim=128, projection_dim=64, temperature=0.07,
+                 mask_ratio=0.75, patch_size=16, tubelet_size=2,
+                 embed_dim=768, depth=12, num_heads=12,
+                 mlp_ratio=4.0, drop_path_rate=0.1):
         super().__init__()
 
-        # Backbone - keeping the lighter MobileNetV3 architecture
-        self.backbone = models.mobilenet_v3_small(pretrained=True).features[:8]
-        self.feature_dim = 40  # MobileNetV3 small layer 8 output channels
+        # Save parameters
+        self.output_dim = output_dim
+        self.projection_dim = projection_dim
+        self.temperature = temperature
+        self.mask_ratio = mask_ratio
+        self.patch_size = patch_size
+        self.tubelet_size = tubelet_size
+        self.embed_dim = embed_dim
 
-        # Temporal feature extractor using 1D convolutions
-        self.temporal_conv = nn.Sequential(
-            nn.Conv1d(self.feature_dim, 32, kernel_size=3, padding=1),
-            nn.BatchNorm1d(32),
-            nn.ReLU(inplace=True)
+        # Vision Transformer components
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+
+        # Positional embedding will be created dynamically in forward pass
+        # based on actual video dimensions
+        self.pos_embed = None
+
+        # 3D patch embedding layer
+        self.patch_embed = nn.Conv3d(
+            in_channels=3,  # RGB channels
+            out_channels=embed_dim,
+            kernel_size=(tubelet_size, patch_size, patch_size),
+            stride=(tubelet_size, patch_size, patch_size)
         )
+        self.norm_pre = nn.LayerNorm(embed_dim)
 
-        # Feature processor
-        self.feature_processor = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1),
-            nn.Flatten(),
-            nn.Linear(32, output_dim)
+        # Transformer encoder blocks
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+        self.blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                drop_path=dpr[i]
+            ) for i in range(depth)
+        ])
+
+        # Norm layer
+        self.norm = nn.LayerNorm(embed_dim)
+
+        # Feature projection for task representation
+        self.task_projection = nn.Sequential(
+            nn.Linear(embed_dim, output_dim),
+            nn.LayerNorm(output_dim)
         )
 
         # Projection head for contrastive learning
@@ -164,89 +114,161 @@ class VideoEncoder(nn.Module):
             nn.BatchNorm1d(projection_dim)
         )
 
-        # Video augmenter
-        self.augmenter = VideoTemporalAugmenter()
-        self.temperature = temperature
+        # Initialize weights
+        self.initialize_weights()
 
         # Report parameter count
         n_params = sum(p.numel() for p in self.parameters())
-        print(f"Video Encoder parameters: {n_params / 1e6:.2f}M")
+        print(f"Video MAE Encoder parameters: {n_params / 1e6:.2f}M")
 
-    def encode_video(self, video):
-        batch, T, H, W, C = video.shape
+    def initialize_weights(self):
+        # Initialize patch embedding weights
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
 
-        # Process frames
-        video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
-        video = video.reshape(batch * T, C, H, W)  # [B*T, C, H, W]
+        # Initialize transformer blocks
+        self.apply(self._init_weights)
 
-        # Apply backbone
-        features = self.backbone(video)  # [B*T, feature_dim, h, w]
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv3d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
 
-        # Get the actual output feature dimension from the backbone
-        _, C_out, h, w = features.shape
+    def create_pos_embed(self, B, T, H, W, device):
+        """Create positional embeddings based on the actual video dimensions"""
+        # Calculate number of patches
+        T_patches = T // self.tubelet_size
+        H_patches = H // self.patch_size
+        W_patches = W // self.patch_size
+        num_patches = T_patches * H_patches * W_patches
 
-        # Global pooling on spatial dimensions
-        features = F.adaptive_avg_pool2d(features, (1, 1))  # [B*T, C_out, 1, 1]
-        features = features.view(batch, T, -1)  # [B, T, C_out]
+        # Create positional embeddings
+        pos_embed = torch.zeros(1, num_patches + 1, self.embed_dim, device=device)
+        nn.init.trunc_normal_(pos_embed, std=0.02)
 
-        # Check if the feature dimension matches what we expect
-        actual_feature_dim = features.shape[2]
+        return pos_embed
 
-        # If there's a mismatch, adjust the temporal_conv to match the actual feature dimension
-        if actual_feature_dim != self.feature_dim:
-            # Create a new 1D convolution to match the dimensions
-            device = features.device
-            self.temporal_conv = nn.Sequential(
-                nn.Conv1d(actual_feature_dim, 32, kernel_size=3, padding=1).to(device),
-                nn.BatchNorm1d(32).to(device),
-                nn.ReLU(inplace=True)
-            )
-            # Update the feature_dim to match the actual dimension
-            self.feature_dim = actual_feature_dim
-            print(f"Adjusted temporal_conv to match feature dimension: {actual_feature_dim}")
+    def random_masking(self, x, mask_ratio):
+        """
+        Perform random masking by per-sample shuffling.
+        x: [N, L, D], sequence of tokens
+        mask_ratio: proportion of tokens to mask
+        """
+        N, L, D = x.shape  # batch, length, dim
+        len_keep = int(L * (1 - mask_ratio))
 
-        # Permute for temporal convolution
-        features = features.permute(0, 2, 1)  # [B, C_out, T]
+        # Generate random indices to keep
+        noise = torch.rand(N, L, device=x.device)  # uniform noise [0, 1]
+        ids_shuffle = torch.argsort(noise, dim=1)  # sort indices
+        ids_restore = torch.argsort(ids_shuffle, dim=1)  # indices to restore
 
-        # Apply 1D convolution for temporal modeling
-        features = self.temporal_conv(features)  # [B, 32, T]
+        # Keep the first len_keep tokens
+        ids_keep = ids_shuffle[:, :len_keep]
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
 
-        # Process features
-        features = self.feature_processor(features)  # [B, output_dim]
+        # Generate the mask: 0 is keep, 1 is remove
+        mask = torch.ones([N, L], device=x.device)
+        mask[:, :len_keep] = 0
+        mask = torch.gather(mask, dim=1, index=ids_restore)
 
-        return features
+        return x_masked, mask, ids_restore
+
+    def forward_encoder(self, x, mask_ratio=0.75):
+        # Expect x as: [B, T, H, W, C]
+        B, T, H, W, C = x.shape
+        device = x.device
+
+        # Check if video dimensions are compatible with patch sizes
+        assert T % self.tubelet_size == 0, f"Video time dimension {T} must be divisible by tubelet size {self.tubelet_size}"
+        assert H % self.patch_size == 0, f"Video height {H} must be divisible by patch size {self.patch_size}"
+        assert W % self.patch_size == 0, f"Video width {W} must be divisible by patch size {self.patch_size}"
+
+        # Permute dimensions for 3D convolution
+        x = x.permute(0, 4, 1, 2, 3)  # [B, C, T, H, W]
+
+        # Apply 3D convolution to get patches
+        x = self.patch_embed(x)  # [B, embed_dim, T_out, H_out, W_out]
+
+        # Flatten spatial and temporal dimensions
+        x = x.flatten(2).transpose(1, 2)  # [B, num_patches, embed_dim]
+        x = self.norm_pre(x)
+
+        # Add cls token
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # Create or retrieve positional embeddings
+        pos_embed = self.create_pos_embed(B, T, H, W, device)
+
+        # Add positional encoding
+        x = x + pos_embed
+
+        # Random masking (only during training)
+        if mask_ratio > 0:
+            x_masked, mask, ids_restore = self.random_masking(x, mask_ratio)
+        else:
+            x_masked, mask, ids_restore = x, None, None
+
+        # Apply transformer blocks
+        for blk in self.blocks:
+            x_masked = blk(x_masked)
+
+        # Apply normalization
+        x_masked = self.norm(x_masked)
+
+        return x_masked, mask, ids_restore
+
+    def encode_video(self, video, mask_ratio=0.0):
+        # Forward encoder (no masking during feature extraction)
+        x_encoded, _, _ = self.forward_encoder(video, mask_ratio=mask_ratio)
+
+        # Use the cls token features
+        cls_feature = x_encoded[:, 0]
+
+        # Project to task representation space
+        task_features = self.task_projection(cls_feature)
+
+        return task_features
 
     def forward(self, videos, labels=None, train=True, num_augs=2):
         if train and labels is not None:
             batch_size = videos.shape[0]
 
-            # Create augmented versions of each video
-            all_videos = [videos]  # Original videos
+            # Create augmented versions by using different mask patterns
+            all_features = []
+            all_projections = []
+
+            # Original video features (no masking for main task representation)
+            task_features = self.encode_video(videos, mask_ratio=0.0)
+            all_features.append(task_features)
+            all_projections.append(F.normalize(self.projector(task_features), dim=1))
+
+            # Augmented versions with different masking patterns
             for _ in range(num_augs):
-                augmented = self.augmenter(videos.clone())  # Apply temporal augmentation
-                all_videos.append(augmented)
+                # Use masking as augmentation during training
+                aug_features = self.encode_video(videos, mask_ratio=self.mask_ratio)
+                all_features.append(aug_features)
+                all_projections.append(F.normalize(self.projector(aug_features), dim=1))
 
-            # Stack all versions: [B*(num_augs+1), T, H, W, C]
-            all_videos_stacked = torch.cat(all_videos, dim=0)
+            # Stack features and projections
+            all_features = torch.stack(all_features, dim=0)  # [num_augs+1, B, output_dim]
+            all_projections = torch.stack(all_projections, dim=0)  # [num_augs+1, B, projection_dim]
 
-            # Encode all videos
-            all_features = self.encode_video(all_videos_stacked)  # [B*(num_augs+1), output_dim]
-            all_projections = F.normalize(self.projector(all_features), dim=1)  # [B*(num_augs+1), projection_dim]
-
-            # Reshape to group by original video
-            features_grouped = all_features.view(num_augs + 1, batch_size, -1)  # [num_augs+1, B, output_dim]
-            projections_grouped = all_projections.view(num_augs + 1, batch_size, -1)  # [num_augs+1, B, projection_dim]
-
-            # Original features for task representation
-            task_features = features_grouped[0]  # [B, output_dim]
+            # Original features for task representation (no masking)
+            task_features = all_features[0]  # [B, output_dim]
 
             # All projections for contrastive learning (transpose to get [B, num_augs+1, dim])
-            projections_for_contrast = projections_grouped.transpose(0, 1)  # [B, num_augs+1, projection_dim]
+            projections_for_contrast = all_projections.transpose(0, 1)  # [B, num_augs+1, projection_dim]
 
             return task_features, projections_for_contrast, labels
         else:
-            # Inference mode - just return features of original video
-            task_features = self.encode_video(videos)
+            # Inference mode - just return features of original video (no masking)
+            task_features = self.encode_video(videos, mask_ratio=0.0)
             projections = F.normalize(self.projector(task_features), dim=1)
             return task_features, projections, None
 
@@ -314,6 +336,93 @@ class VideoEncoder(nn.Module):
         loss = torch.sum(loss / n_pos) / batch_size
 
         return loss
+
+
+# Supporting modules for the Video MAE encoder
+
+class Attention(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)  # make torchscript happy (cannot use tensor as tuple)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class Mlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
+
+    def __init__(self, drop_prob=0.):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        if self.drop_prob == 0. or not self.training:
+            return x
+        keep_prob = 1 - self.drop_prob
+        # work with diff dim tensors, not just 2D ConvNets
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()  # binarize
+        output = x.div(keep_prob) * random_tensor
+        return output
+
+
+class Block(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = Attention(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+
+        # Use DropPath for stochastic depth
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
+    def forward(self, x):
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
 
 # 配置参数
 @dataclass
@@ -588,7 +697,14 @@ class Agent(nn.Module):
         )
 
         # Video encoder
-        self.video_encoder = VideoEncoder(output_dim=ftask_dim).to(device)
+        self.video_encoder = VideoMAEEncoder(
+            output_dim=ftask_dim,
+            projection_dim=64,
+            embed_dim=512,  # Smaller for efficiency
+            depth=6,  # Reduced from 12 for efficiency
+            num_heads=8,
+            tubelet_size=2
+        ).to(device)
 
         # Define TargetNets
         self.noise_pred_net = UNetPolicy(
@@ -919,7 +1035,7 @@ if __name__ == "__main__":
     # Configure parameter groups with different learning rates
     param_groups = [
         {"params": diffusion_params, "lr": args.lr, "name": "diffusion"},
-        {"params": video_encoder_params, "lr": args.lr * 0.5, "name": "video_encoder"},
+        {"params": video_encoder_params, "lr": args.lr * 0.1, "name": "video_encoder"},
         {"params": obs_encoder_params, "lr": args.lr, "name": "obs_encoder"}
     ]
     # Initialize optimizer with parameter groups
