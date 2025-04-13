@@ -27,7 +27,6 @@ python -m examples.baselines.hyper_net.train_hypernet_diffusion --env-id PickCub
   --control-mode "pd_joint_delta_pos" --shader rt --num-demos 80 --max_episode_steps 500 --total_iters 60000 --batch_size 128 \
   --log_freq 5000 --eval_freq 5000 --save_freq 5000 --num_eval_episodes 100 --num_eval_envs 1 \
   --obs_mode rgb+depth --exp_name PickCubeYCB-pick_red_cube_plate-hypernet_diffusion-80 \
-  --video-path /home/engram/zhouxunzhe/ManiSkill/examples/baselines/hyper_net/processed_data
 
 # Train MLP
 # python -m examples.baselines.hyper_net.train_mlp --env-id PickCubeYCB-v1 \
