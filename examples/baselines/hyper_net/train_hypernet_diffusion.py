@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import torchvision.models as models
 from tqdm import tqdm
 import tyro
 import h5py
@@ -25,6 +24,7 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import models
 
 from .hyper_net.evaluate_diffusion import evaluate
 from .hyper_net.make_env import make_eval_envs
@@ -55,116 +55,265 @@ for prompt in prompt2task_dict.keys():
         prompt2label_dict[prompt] = label_counter
         label_counter += 1
 
-# Enhanced Video Encoder with Task-specific Feature Extraction
+
+class VideoTemporalAugmenter:
+    def __init__(self, temporal_mask_ratio=0.2, frame_dropout_ratio=0.2,
+                 temporal_shuffle_prob=0.5):
+        self.temporal_mask_ratio = temporal_mask_ratio
+        self.frame_dropout_ratio = frame_dropout_ratio
+        self.temporal_shuffle_prob = temporal_shuffle_prob
+
+    def __call__(self, video):
+        """
+        Apply semantic-preserving temporal augmentations
+        video: [B, T, H, W, C]
+        """
+        B, T, H, W, C = video.shape
+        augmented_video = video.clone()
+
+        # Apply one augmentation randomly - this preserves semantic content better
+        aug_choice = random.randint(0, 3)
+
+        if aug_choice == 0 and T > 2:
+            # Temporal masking - mask random frames (self-supervision task)
+            mask_size = max(1, int(T * self.temporal_mask_ratio))
+            start_idx = random.randint(0, T - mask_size)
+            # Instead of zeroing, we can use a more subtle masking
+            mask = torch.ones_like(augmented_video)
+            mask[:, start_idx:start_idx + mask_size] = 0.3  # Dim but not completely zero
+            augmented_video = augmented_video * mask
+
+        elif aug_choice == 1 and T > 2:
+            # Frame dropout - drop frames and repeat previous
+            # This preserves semantic content by copying from neighboring frames
+            drop_frames = torch.rand(T) < self.frame_dropout_ratio
+            if drop_frames.sum() > 0:  # Only if we have frames to drop
+                for t in range(1, T):
+                    if drop_frames[t]:
+                        augmented_video[:, t] = augmented_video[:, t - 1]
+
+        elif aug_choice == 2 and T > 4:
+            # Temporal shuffling of small chunks
+            # Keep chunks small to preserve local temporal structures
+            chunk_size = max(2, T // 5)
+            num_chunks = T // chunk_size
+            if num_chunks > 1:
+                chunks = [augmented_video[:, i * chunk_size:(i + 1) * chunk_size].clone()
+                          for i in range(num_chunks)]
+                # Only shuffle some chunks, not all
+                num_to_shuffle = max(2, num_chunks // 2)
+                indices_to_shuffle = random.sample(range(num_chunks), num_to_shuffle)
+                shuffle_indices = torch.randperm(num_to_shuffle).tolist()
+
+                for i, idx in enumerate(indices_to_shuffle):
+                    new_idx = indices_to_shuffle[shuffle_indices[i]]
+                    augmented_video[:, idx * chunk_size:(idx + 1) * chunk_size] = chunks[new_idx]
+
+        elif aug_choice == 3 and T > 2:
+            # Temporal subsampling and interpolation
+            # This preserves semantic meaning while changing temporal resolution
+            keep_fraction = random.uniform(0.6, 0.9)  # Keep 60-90% of frames
+            keep_count = max(2, int(T * keep_fraction))
+            keep_indices = sorted(random.sample(range(T), keep_count))
+
+            sampled_frames = augmented_video[:, keep_indices]
+
+            # Reshape for interpolation
+            B_new, T_new, H, W, C = sampled_frames.shape
+            sampled_frames = sampled_frames.reshape(B_new, T_new, C, H, W).permute(0, 2, 1, 3, 4)
+
+            # Interpolate back to original length using trilinear interpolation
+            interpolated = F.interpolate(
+                sampled_frames,
+                size=(T, H, W),
+                mode='trilinear',
+                align_corners=False
+            )
+
+            # Reshape back to original format
+            augmented_video = interpolated.permute(0, 2, 3, 4, 1)
+
+        return augmented_video
+
+
 class VideoEncoder(nn.Module):
-    def __init__(self, output_dim=64, backbone='resnet18', dropout_rate=0.3):
+    def __init__(self, output_dim=128, projection_dim=64, temperature=0.07):
         super().__init__()
-        # Select backbone architecture
-        if backbone == 'resnet18':
-            self.backbone = models.resnet18(pretrained=True)
-            feature_dim = 512
-        elif backbone == 'resnet34':
-            self.backbone = models.resnet34(pretrained=True)
-            feature_dim = 512
-        elif backbone == 'resnet50':
-            self.backbone = models.resnet50(pretrained=True)
-            feature_dim = 2048
-        else:
-            self.backbone = models.resnet18(pretrained=True)
-            feature_dim = 512
 
-        # Remove the final FC layer from backbone
-        self.backbone = nn.Sequential(*list(self.backbone.children())[:-1])
+        # Backbone - keeping the lighter MobileNetV3 architecture
+        self.backbone = models.mobilenet_v3_small(pretrained=True).features[:8]
+        self.feature_dim = 40  # MobileNetV3 small layer 8 output channels
 
-        # 3D Conv for capturing spatial-temporal patterns
-        self.conv3d = nn.Sequential(
-            nn.Conv3d(feature_dim, 256, kernel_size=(3, 1, 1), padding=(1, 0, 0)),
-            nn.BatchNorm3d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv3d(256, 128, kernel_size=(3, 1, 1), padding=(1, 0, 0)),
-            nn.BatchNorm3d(128),
+        # Temporal feature extractor using 1D convolutions
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(self.feature_dim, 32, kernel_size=3, padding=1),
+            nn.BatchNorm1d(32),
             nn.ReLU(inplace=True)
         )
 
-        # Temporal attention mechanism
-        self.temporal_attention = nn.Sequential(
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
+        # Feature processor
+        self.feature_processor = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(32, output_dim)
         )
 
-        # Transformer encoder for capturing long-range dependencies
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=128,
-                nhead=4,
-                dim_feedforward=256,
-                dropout=dropout_rate
-            ),
-            num_layers=2
+        # Projection head for contrastive learning
+        self.projector = nn.Sequential(
+            nn.Linear(output_dim, projection_dim),
+            nn.BatchNorm1d(projection_dim)
         )
 
-        # Task-specific feature extraction
-        self.task_fc = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(128, output_dim)
-        )
+        # Video augmenter
+        self.augmenter = VideoTemporalAugmenter()
+        self.temperature = temperature
 
-        # Auxiliary classifier for task discrimination
-        self.task_classifier = nn.Sequential(
-            nn.Linear(output_dim, 32),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(32, len(prompt2task_dict))
-        )
+        # Report parameter count
+        n_params = sum(p.numel() for p in self.parameters())
+        print(f"Video Encoder parameters: {n_params / 1e6:.2f}M")
 
-        self.feature_norm = nn.LayerNorm(128)
-        self.contrastive_projector = nn.Sequential(
-            nn.Linear(output_dim, output_dim),
-            nn.ReLU(),
-            nn.Linear(output_dim, output_dim)
-        )
-
-    def forward(self, video):
+    def encode_video(self, video):
         batch, T, H, W, C = video.shape
 
-        # Process each frame with the backbone CNN
+        # Process frames
         video = video.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
-        video = video.reshape(batch * T, C, H, W)
-        features = self.backbone(video)  # [B*T, D, 1, 1]
-        features = features.view(batch, T, -1, 1, 1)  # [B, T, D, 1, 1]
+        video = video.reshape(batch * T, C, H, W)  # [B*T, C, H, W]
 
-        # Process with 3D convolutions to capture temporal patterns
-        features = features.permute(0, 2, 1, 3, 4)  # [B, D, T, 1, 1]
-        features = self.conv3d(features)  # [B, 128, T, 1, 1]
-        features = features.squeeze(-1).squeeze(-1)  # [B, 128, T]
-        features = features.permute(0, 2, 1)  # [B, T, 128]
+        # Apply backbone
+        features = self.backbone(video)  # [B*T, feature_dim, h, w]
 
-        # Apply temporal attention
-        attention_weights = self.temporal_attention(features)  # [B, T, 1]
-        attended_features = features * attention_weights
+        # Get the actual output feature dimension from the backbone
+        _, C_out, h, w = features.shape
 
-        # Transformer for capturing complex temporal relationships
-        trans_input = attended_features.permute(1, 0, 2)  # [T, B, 128]
-        trans_output = self.transformer(trans_input)  # [T, B, 128]
-        trans_output = trans_output.permute(1, 0, 2)  # [B, T, 128]
+        # Global pooling on spatial dimensions
+        features = F.adaptive_avg_pool2d(features, (1, 1))  # [B*T, C_out, 1, 1]
+        features = features.view(batch, T, -1)  # [B, T, C_out]
 
-        # Global pooling and task feature extraction
-        # global_features = trans_output.mean(dim=1)  # [B, 128]
-        # task_features = self.task_fc(global_features)  # [B, output_dim]
-        global_features = self.feature_norm(trans_output.mean(dim=1))  # [B, 128]
-        task_features = self.task_fc(global_features)  # [B, output_dim]
+        # Check if the feature dimension matches what we expect
+        actual_feature_dim = features.shape[2]
 
-        contrastive_features = self.contrastive_projector(task_features)
-        contrastive_features = F.normalize(contrastive_features, p=2, dim=1)
+        # If there's a mismatch, adjust the temporal_conv to match the actual feature dimension
+        if actual_feature_dim != self.feature_dim:
+            # Create a new 1D convolution to match the dimensions
+            device = features.device
+            self.temporal_conv = nn.Sequential(
+                nn.Conv1d(actual_feature_dim, 32, kernel_size=3, padding=1).to(device),
+                nn.BatchNorm1d(32).to(device),
+                nn.ReLU(inplace=True)
+            )
+            # Update the feature_dim to match the actual dimension
+            self.feature_dim = actual_feature_dim
+            print(f"Adjusted temporal_conv to match feature dimension: {actual_feature_dim}")
 
-        # Get classification logits for auxiliary task
-        task_logits = self.task_classifier(task_features)
+        # Permute for temporal convolution
+        features = features.permute(0, 2, 1)  # [B, C_out, T]
 
-        return task_features, task_logits, contrastive_features
+        # Apply 1D convolution for temporal modeling
+        features = self.temporal_conv(features)  # [B, 32, T]
+
+        # Process features
+        features = self.feature_processor(features)  # [B, output_dim]
+
+        return features
+
+    def forward(self, videos, labels=None, train=True, num_augs=2):
+        if train and labels is not None:
+            batch_size = videos.shape[0]
+
+            # Create augmented versions of each video
+            all_videos = [videos]  # Original videos
+            for _ in range(num_augs):
+                augmented = self.augmenter(videos.clone())  # Apply temporal augmentation
+                all_videos.append(augmented)
+
+            # Stack all versions: [B*(num_augs+1), T, H, W, C]
+            all_videos_stacked = torch.cat(all_videos, dim=0)
+
+            # Encode all videos
+            all_features = self.encode_video(all_videos_stacked)  # [B*(num_augs+1), output_dim]
+            all_projections = F.normalize(self.projector(all_features), dim=1)  # [B*(num_augs+1), projection_dim]
+
+            # Reshape to group by original video
+            features_grouped = all_features.view(num_augs + 1, batch_size, -1)  # [num_augs+1, B, output_dim]
+            projections_grouped = all_projections.view(num_augs + 1, batch_size, -1)  # [num_augs+1, B, projection_dim]
+
+            # Original features for task representation
+            task_features = features_grouped[0]  # [B, output_dim]
+
+            # All projections for contrastive learning (transpose to get [B, num_augs+1, dim])
+            projections_for_contrast = projections_grouped.transpose(0, 1)  # [B, num_augs+1, projection_dim]
+
+            return task_features, projections_for_contrast, labels
+        else:
+            # Inference mode - just return features of original video
+            task_features = self.encode_video(videos)
+            projections = F.normalize(self.projector(task_features), dim=1)
+            return task_features, projections, None
+
+    def supervised_contrastive_loss(self, projections_grouped, labels):
+        """
+        Compute supervised contrastive loss
+        - Positive pairs: Different augmentations of the same video (same instance)
+                          + Different videos with the same label (same task)
+        - Negative pairs: Videos with different labels (different tasks)
+
+        projections_grouped: [batch_size, num_views, projection_dim]
+        labels: [batch_size]
+        """
+        batch_size, num_views, projection_dim = projections_grouped.shape
+        device = projections_grouped.device
+        labels = labels.to(device)
+
+        # Reshape to [batch_size*num_views, projection_dim]
+        projections = projections_grouped.reshape(-1, projection_dim)
+
+        # Create expanded labels to match each augmentation
+        expanded_labels = labels.repeat_interleave(num_views)
+
+        # Compute similarity matrix
+        similarity = torch.matmul(projections, projections.T) / self.temperature  # [B*num_views, B*num_views]
+
+        # Create mask for positive pairs
+        # 1. Different augmentations of the same video
+        mask_same_instance = torch.zeros((batch_size * num_views, batch_size * num_views), device=device)
+        for i in range(batch_size):
+            for a in range(num_views):
+                for b in range(num_views):
+                    if a != b:  # Different views of same video
+                        mask_same_instance[i * num_views + a, i * num_views + b] = 1
+
+        # 2. Different videos with the same label (same task)
+        mask_same_label = (expanded_labels.unsqueeze(0) == expanded_labels.unsqueeze(1)).float()
+        # Remove self-similarity
+        mask_self = torch.eye(batch_size * num_views, device=device)
+        mask_same_label = mask_same_label * (1 - mask_self)
+        # Remove same instance pairs (already counted in mask_same_instance)
+        mask_same_label = mask_same_label - mask_same_instance
+        mask_same_label = torch.clamp(mask_same_label, min=0.0)
+
+        # Combined mask: both same instance and same label are positive pairs
+        mask_positives = mask_same_instance + mask_same_label
+
+        # For numerical stability
+        sim_max, _ = torch.max(similarity, dim=1, keepdim=True)
+        similarity = similarity - sim_max.detach()
+
+        # Compute exp(similarity)
+        exp_sim = torch.exp(similarity)
+
+        # Compute positive and negative similarities
+        pos_sim = torch.sum(exp_sim * mask_positives, dim=1)
+        neg_sim = torch.sum(exp_sim * (1 - mask_self), dim=1)
+
+        # Compute final loss
+        loss = -torch.log(pos_sim / neg_sim)
+
+        # Average over non-zero elements
+        n_pos = torch.sum(mask_positives, dim=1)
+        n_pos = torch.clamp(n_pos, min=1.0)  # Avoid division by zero
+        loss = torch.sum(loss / n_pos) / batch_size
+
+        return loss
 
 # 配置参数
 @dataclass
@@ -211,10 +360,10 @@ class Args:
     )
     diffusion_step_embed_dim: int = 32  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [48, 72, 96]
+        default_factory=lambda: [32, 48, 64]
     )  # default setting is about ~4.5M params
     n_groups: int = (
-        4  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+        4  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are similar
     )
 
     # Environment/experiment specific arguments
@@ -367,7 +516,7 @@ class HypernetDataset(Dataset):
         task_name = prompt2task_dict[prompt]
         video_idx = random.randint(0, len(self.videos[task_name])-1)
         video = self.videos[task_name][video_idx].to(self.device, dtype=torch.float32) / 255.0
-        label = prompt2label_dict[prompt]
+        label = prompt2label_dict[prompt] if prompt in prompt2label_dict else -1
 
         return {
             "video": video,
@@ -415,9 +564,9 @@ class Agent(nn.Module):
         fobs_dim = 256
         ftask_dim = 512
         weight_dim = 128
-        deriv_hidden_dim = 64
+        deriv_hidden_dim = 48
         driv_num_layers = 3
-        codec_hidden_dim = 128
+        codec_hidden_dim = 96
         codec_num_layers = 3
         num_layers = 3
         if args.visual_encoder == 'plain_conv':
@@ -498,141 +647,28 @@ class Agent(nn.Module):
         videos = data_batch["video"]
         obs_seq = data_batch["observations"]
         action_seq = data_batch["actions"]
-        labels = data_batch["label"].to(self.device)
+        labels = data_batch["label"]
         B = obs_seq["state"].shape[0]
 
-        # Get task features and task classification logits from video encoder
-        ftask, task_logits, contrastive_features = self.video_encoder(videos)
+        # Get task features and contrastive features from video encoder with labels
+        task_features, projections_for_contrast, _ = self.video_encoder(
+            videos,
+            labels=labels,
+            train=True,
+            num_augs=2
+        )
 
-        def augment_features(features, strength=0.1):
-            # Add small random noise during training to improve robustness
-            noise = torch.randn_like(features) * strength
-            return features + noise
+        # 1. Supervised Contrastive Loss - ensures task-level similarity
+        # This is now a label-aware contrastive loss that considers tasks
+        contrastive_loss = self.video_encoder.supervised_contrastive_loss(
+            projections_for_contrast,
+            labels
+        )
 
-        # Apply augmentation during training
-        contrastive_features = augment_features(contrastive_features)
-
-        # 1. Classification Loss - helps video encoder learn task-discriminative features
-        cls_loss = F.cross_entropy(task_logits, labels)
-
-        # 2. Triplet Loss - ensures features from same task are closer than different tasks
-        def batch_hard_triplet_loss(features, labels, margin=0.5):
-            # L2 normalize features for cosine similarity
-            features = F.normalize(features, p=2, dim=1)
-
-            # Compute pairwise distances using cosine distance (1 - similarity)
-            similarity = torch.mm(features, features.t())
-            distances = 1.0 - similarity
-
-            # Create mask for positive and negative pairs
-            same_identity_mask = torch.eq(labels.unsqueeze(0), labels.unsqueeze(1))
-            negative_mask = ~same_identity_mask
-
-            # Remove self-pairs from positive pairs
-            positive_mask = same_identity_mask.clone()
-            positive_mask.fill_diagonal_(False)
-
-            # Find hardest positive and negative for each anchor
-            hardest_positive_dist = torch.max(distances * positive_mask.float(), dim=1)[0]
-            hardest_negative_dist = torch.min(distances * negative_mask.float() +
-                                              (1 - negative_mask.float()) * 1e6, dim=1)[0]
-
-            # Compute triplet loss with margin
-            loss = F.relu(hardest_positive_dist - hardest_negative_dist + margin)
-
-            return loss.mean()
-
-        triplet_loss = batch_hard_triplet_loss(contrastive_features, labels)
-
-        # 3. Inter-class variance loss - maximize distance between class centroids
-        def inter_class_variance_loss(features, labels):
-            # L2 normalize features
-            features = F.normalize(features, p=2, dim=1)
-
-            unique_labels = torch.unique(labels)
-            if len(unique_labels) <= 1:
-                return torch.tensor(0.0, device=features.device)
-
-            centroids = []
-            for label in unique_labels:
-                mask = (labels == label)
-                if mask.sum() > 0:
-                    centroid = features[mask].mean(dim=0)
-                    # Normalize centroid
-                    centroid = F.normalize(centroid, p=2, dim=0)
-                    centroids.append(centroid)
-
-            centroids = torch.stack(centroids)
-
-            # Compute cosine similarity matrix between centroids
-            similarity = torch.mm(centroids, centroids.t())
-
-            # Create mask to exclude self-similarity
-            mask = 1.0 - torch.eye(len(centroids), device=features.device)
-
-            # We want to minimize similarity (maximize negative similarity)
-            # between different classes
-            loss = (similarity * mask).sum() / (len(centroids) * (len(centroids) - 1))
-
-            return loss  # No need for negative sign since we want to minimize similarity
-
-        inter_class_loss = inter_class_variance_loss(contrastive_features, labels)
-
-        # 4. Intra-class compactness loss - minimize variance within each class
-        def intra_class_compactness_loss(features, labels):
-            unique_labels = torch.unique(labels)
-            total_variance = 0.0
-            class_count = 0
-
-            for label in unique_labels:
-                mask = (labels == label)
-                if mask.sum() > 1:  # Need at least 2 samples
-                    class_features = features[mask]
-                    centroid = class_features.mean(dim=0, keepdim=True)
-                    variance = torch.mean(torch.sum((class_features - centroid) ** 2, dim=1))
-                    total_variance += variance
-                    class_count += 1
-
-            if class_count == 0:
-                return torch.tensor(0.0, device=self.device)
-
-            return total_variance / class_count
-
-        intra_class_loss = intra_class_compactness_loss(contrastive_features, labels)
-
-        def info_nce_loss(features, labels, temperature=0.07):
-            features = F.normalize(features, dim=1)
-            similarity_matrix = torch.matmul(features, features.T) / temperature
-
-            # Create masks for positive pairs
-            labels = labels.contiguous().view(-1, 1)
-            mask_positive = torch.eq(labels, labels.T).float()
-
-            # Remove self-contrast cases
-            mask_self = torch.eye(mask_positive.shape[0], device=mask_positive.device)
-            mask_positive = mask_positive - mask_self
-
-            # For numerical stability
-            logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
-            logits = similarity_matrix - logits_max.detach()
-
-            # Compute log_prob
-            exp_logits = torch.exp(logits)
-            log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
-
-            # Compute mean of log-likelihood over positive pairs
-            mean_log_prob_pos = (mask_positive * log_prob).sum(1) / mask_positive.sum(1)
-
-            # Loss
-            loss = -mean_log_prob_pos.mean()
-            return loss
-
-        contrastive_loss = info_nce_loss(contrastive_features, labels)
-
-        # 5. Diffusion model loss - original noise prediction loss
-        # Generate weights for each TargetNet
-        down_path_params = self.hypernet_down_path.forward_blocks(contrastive_features)[-1]
-        up_path_params = self.hypernet_up_path.forward_blocks(contrastive_features)[-1]
+        # 2. Diffusion model loss - original noise prediction loss
+        # Generate weights for each TargetNet using the task features
+        down_path_params = self.hypernet_down_path.forward_blocks(task_features)[-1]
+        up_path_params = self.hypernet_up_path.forward_blocks(task_features)[-1]
 
         obs_cond = self.encode_obs(obs_seq, eval_mode=False)
         noise = torch.randn((B, self.pred_horizon, self.act_dim), device=self.device)
@@ -649,24 +685,14 @@ class Agent(nn.Module):
         )
         diffusion_loss = F.mse_loss(noise_pred, noise)
 
-        # Combine all losses with weighting factors
-        total_loss = (
-                diffusion_loss +
-                0.02 * cls_loss +
-                0.5 * triplet_loss +
-                0.1 * contrastive_loss +  # Add contrastive loss with higher weight
-                0.5 * inter_class_loss +
-                0.1 * intra_class_loss
-        )
+        # Combine losses - no need for a separate diversity loss as it's built into the
+        # supervised contrastive loss (pushing different tasks apart)
+        total_loss = diffusion_loss + 0.1 * contrastive_loss
 
         # Track individual losses for monitoring
         self.loss_dict = {
             'diffusion_loss': diffusion_loss.item(),
-            'classification_loss': cls_loss.item(),
-            'triplet_loss': triplet_loss.item(),
             'contrastive_loss': contrastive_loss.item(),
-            'inter_class_loss': inter_class_loss.item(),
-            'intra_class_loss': intra_class_loss.item(),
             'total_loss': total_loss.item()
         }
 
@@ -674,12 +700,18 @@ class Agent(nn.Module):
 
     def get_action(self, obs_seq, val_videos, prompts):
         videos = []
+        labels = []
+
         for prompt in prompts:
             task_name = prompt2task_dict[prompt]
-            video_idx = random.randint(0, len(val_videos[task_name])-1)
+            label = prompt2label_dict[prompt] if prompt in prompt2label_dict else -1
+            video_idx = random.randint(0, len(val_videos[task_name]) - 1)
             video = val_videos[task_name][video_idx].unsqueeze(0).to(self.device, dtype=torch.float32) / 255.0
             videos.append(video)
+            labels.append(label)
+
         videos = torch.cat(videos, dim=0)
+        labels = torch.tensor(labels, device=self.device)
 
         B = obs_seq["state"].shape[0]
         with torch.no_grad():
@@ -688,15 +720,12 @@ class Agent(nn.Module):
             if self.include_depth:
                 obs_seq["depth"] = obs_seq["depth"].permute(0, 1, 4, 2, 3)
 
-            ftask, task_logits, contrastive_features = self.video_encoder(videos)
+            # During inference, we don't need augmentation
+            task_features, _, _ = self.video_encoder(videos, labels=labels, train=False)
 
-            # Generate weights for each TargetNet
-            # down_path_params = self.hypernet_down_path.forward_blocks(ftask)[-1]
-            # up_path_params = self.hypernet_up_path.forward_blocks(ftask)[-1]
-
-            # Use contrastive features for hypernetwork
-            down_path_params = self.hypernet_down_path.forward_blocks(contrastive_features)[-1]
-            up_path_params = self.hypernet_up_path.forward_blocks(contrastive_features)[-1]
+            # Use learned features for hypernetwork
+            down_path_params = self.hypernet_down_path.forward_blocks(task_features)[-1]
+            up_path_params = self.hypernet_up_path.forward_blocks(task_features)[-1]
 
             obs_cond = self.encode_obs(obs_seq, eval_mode=True)
             noisy_action_seq = torch.randn((B, self.pred_horizon, self.act_dim), device=self.device)
@@ -890,19 +919,20 @@ if __name__ == "__main__":
     # Configure parameter groups with different learning rates
     param_groups = [
         {"params": diffusion_params, "lr": args.lr, "name": "diffusion"},
-        {"params": video_encoder_params, "lr": args.lr, "name": "video_encoder"},
+        {"params": video_encoder_params, "lr": args.lr * 0.5, "name": "video_encoder"},
         {"params": obs_encoder_params, "lr": args.lr, "name": "obs_encoder"}
     ]
     # Initialize optimizer with parameter groups
     optimizer = optim.AdamW(
         params=param_groups,
         betas=(0.95, 0.999),
-        weight_decay=1e-6
+        weight_decay=1e-6,
+        eps=1e-8
     )
     lr_scheduler = get_scheduler(
         name="cosine",
         optimizer=optimizer,
-        num_warmup_steps=1000,
+        num_warmup_steps=2000,
         num_training_steps=args.save_freq
     )
 
@@ -916,6 +946,12 @@ if __name__ == "__main__":
                 10, agent, envs, device, args.sim_backend, val_videos=val_videos
             )
             if np.mean(eval_metrics['success_at_end']) >= 0.5:
+                print(f"Evaluated {len(eval_metrics['success_at_end'])} episodes")
+                for k in eval_metrics.keys():
+                    eval_metrics[k] = np.mean(eval_metrics[k])
+                    writer.add_scalar(f"eval/{k}", eval_metrics[k], iteration)
+                    print(f"{k}: {eval_metrics[k]:.4f}")
+                print("Small scaled success_at_end >= 0.5, no re-evaluate with more episodes...")
                 eval_metrics = evaluate(
                     args.num_eval_episodes, agent, envs, device, args.sim_backend, val_videos=val_videos
                 )
@@ -963,6 +999,7 @@ if __name__ == "__main__":
         last_tick = time.time()
         optimizer.zero_grad()
         total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=1.0)
         optimizer.step()
         lr_scheduler.step()
         timings["backward"] += time.time() - last_tick

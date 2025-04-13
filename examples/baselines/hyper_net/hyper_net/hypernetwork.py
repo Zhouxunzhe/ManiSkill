@@ -286,6 +286,9 @@ class Hypernet(nn.Module):
             [ParamLN(weight_dim) for submodule in self.target_net.get_submodules()]
         )
 
+        n_params = sum(p.numel() for p in self.parameters())
+        print(f"HyperNet parameters: {n_params / 1e6:.2f}M")
+
     def forward_block(self, ftask, weight_dicts, opt_block):
         weight_upd_dicts = opt_block(ftask, weight_dicts, self.encoders, self.decoders)
         weight_upd_dicts = [
