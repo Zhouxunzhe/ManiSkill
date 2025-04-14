@@ -58,7 +58,7 @@ class PickCubeYCBEnv(BaseEnv):
         self,
         *args,
         robot_uids="panda_wristcam",
-        robot_init_qpos_noise=0.02,
+        robot_init_qpos_noise=0.03,
         num_envs=1,
         reconfiguration_freq=None,
         **kwargs,
@@ -209,7 +209,7 @@ class PickCubeYCBEnv(BaseEnv):
             self.source_obj = self._objs[1]
             self.target_obj = self._objs[0]
 
-        multi_task = False
+        multi_task = True
         if not multi_task:
             self.is_pour = False
             self.source_obj = self.cube1
@@ -313,6 +313,36 @@ class PickCubeYCBEnv(BaseEnv):
         byte_seq = tensor.tobytes().rstrip(b'\x00')
         return byte_seq.decode('utf-8')
 
+    def get_objs_from_prompt(self, prompt_str):
+        if prompt_str == "pick red cube and place on plate.":
+            self.source_obj = self.cube1
+            self.target_obj = self._objs[0]
+        elif prompt_str == "pick blue cube and place on plate.":
+            self.source_obj = self.cube2
+            self.target_obj = self._objs[0]
+        elif prompt_str == "pick yellow cup and place on plate.":
+            self.source_obj = self._objs[1]
+            self.target_obj = self._objs[0]
+            self.is_pour = False
+        elif prompt_str == "stack red cube on blue cube.":
+            self.source_obj = self.cube1
+            self.target_obj = self.cube2
+        elif prompt_str == "stack blue cube on red cube.":
+            self.source_obj = self.cube2
+            self.target_obj = self.cube1
+        elif prompt_str == "pick red cube and place on yellow cup.":
+            self.source_obj = self.cube1
+            self.target_obj = self._objs[1]
+        elif prompt_str == "pick blue cube and place on yellow cup.":
+            self.source_obj = self.cube2
+            self.target_obj = self._objs[1]
+        elif prompt_str == "pick yellow cup and pour and place on plate.":
+            self.source_obj = self._objs[1]
+            self.target_obj = self._objs[0]
+            self.is_pour = True
+
+        return
+
     def _get_prompt(self):
         if self.source_obj == self.cube1 and self.target_obj == self._objs[0]:
             self.prompt_str = "pick red cube and place on plate."
@@ -335,6 +365,7 @@ class PickCubeYCBEnv(BaseEnv):
         if self.source_obj == self._objs[1] and self.target_obj == self._objs[0] and self.is_pour:
             self.prompt_str = "pick yellow cup and pour and place on plate."
 
+        # print(self.prompt_str)
         prompt_tensor = self.encode_string_to_tensor(self.prompt_str, 100)
         return prompt_tensor
 
@@ -343,7 +374,7 @@ class PickCubeYCBEnv(BaseEnv):
             tcp_pose=self.agent.tcp.pose.raw_pose,
             is_grasped=info["is_grasped"],
             is_obj_placed=info["is_obj_placed"],
-            # prompt=self._get_prompt(),
+            prompt=self._get_prompt(),
         )
         if "state" in self.obs_mode:
             obs.update(
@@ -351,7 +382,7 @@ class PickCubeYCBEnv(BaseEnv):
                 cube_pose=self.source_obj.pose.raw_pose,
                 tcp_to_cube_pos=self.source_obj.pose.p - self.agent.tcp.pose.p,
                 cube_to_goal_pos=self.target_obj.pose.p - self.source_obj.pose.p,
-                # prompt=self._get_prompt(),
+                prompt=self._get_prompt(),
             )
         return obs
 

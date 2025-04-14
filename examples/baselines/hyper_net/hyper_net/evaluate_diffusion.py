@@ -34,6 +34,8 @@ def evaluate(n: int, agent, eval_envs, device, sim_backend: str, progress_bar: b
                 eps_count += eval_envs.num_envs
                 if progress_bar:
                     pbar.update(eval_envs.num_envs)
+                obs, info = eval_envs.reset()
+                eval_envs.envs[0].base_env.get_objs_from_prompt(info['prompt'])
     agent.train()
     for k in eval_metrics.keys():
         eval_metrics[k] = np.stack(eval_metrics[k])

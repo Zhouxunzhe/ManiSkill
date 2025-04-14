@@ -22,6 +22,7 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     )
 
     FINGER_LENGTH = 0.025
+    RAND_WEIGHT = 0.03
     RAND_WEIGHT = 0.0
     env = env.unwrapped
 

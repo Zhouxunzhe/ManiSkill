@@ -158,6 +158,10 @@ def replay_parallelized_sim(
             # note (stao): this code to reformat the trajectories into a list of batched dicts can be optimized
             env_states = trajectory_utils.dict_to_list_of_dicts(traj["env_states"])
             actions = np.array(traj["actions"])
+            if "prompt" in traj['obs']['extra'].keys():
+                prompt_tensor = traj['obs']['extra']['prompt'][0]
+                prompt_str = env.base_env.decode_tensor_to_string(prompt_tensor)
+                env.base_env.get_objs_from_prompt(prompt_str)
 
             # padding
             for _ in range(episode_batch_max_len + 1 - len(env_states)):
@@ -266,8 +270,16 @@ def replay_cpu_sim(
             # Each trial for each trajectory to replay, we reset the environment
             # and optionally set the first environment state
             env.reset(**reset_kwargs)
+            if "prompt" in trajectories[traj_id]['obs']['extra'].keys():
+                prompt_tensor = trajectories[traj_id]['obs']['extra']['prompt'][0]
+                prompt_str = env.base_env.decode_tensor_to_string(prompt_tensor)
+                env.base_env.get_objs_from_prompt(prompt_str)
             if ori_env is not None:
                 ori_env.reset(**reset_kwargs)
+                if "prompt" in trajectories[traj_id]['obs']['extra'].keys():
+                    prompt_tensor = trajectories[traj_id]['obs']['extra']['prompt'][0]
+                    prompt_str = ori_env.base_env.decode_tensor_to_string(prompt_tensor)
+                    ori_env.base_env.get_objs_from_prompt(prompt_str)
 
             # set first environment state and update recorded env state
             if args.use_first_env_state or args.use_env_states:
