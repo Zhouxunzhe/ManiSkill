@@ -26,12 +26,12 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from hyper_net.evaluate_diffusion import evaluate
-from hyper_net.make_env import make_eval_envs
-from hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
+from .hyper_net.evaluate_diffusion import evaluate
+from .hyper_net.make_env import make_eval_envs
+from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
-from hyper_net.hypernetwork_diffusion import UNetPolicy
-from hyper_net.hypernetwork import Hypernet
+from .hyper_net.hypernetwork_diffusion import UNetPolicy
+from .hyper_net.hypernetwork import Hypernet
 from diffusers.optimization import get_scheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
@@ -1019,7 +1019,7 @@ if __name__ == "__main__":
             # Feature visualization (less frequently to avoid slowing down training)
             if iteration % (args.log_freq * 10) == 0 and iteration > 0:
                 # Get a small batch for visualization
-                vis_batch = next(iter(DataLoader(dataset, batch_size=min(64, args.batch_size))))
+                vis_batch = next(iter(DataLoader(dataset, batch_size=args.batch_size)))
                 videos = vis_batch["video"].to(device)
                 labels = vis_batch["label"].to(device)
 

@@ -374,7 +374,7 @@ class PickCubeYCBEnv(BaseEnv):
             tcp_pose=self.agent.tcp.pose.raw_pose,
             is_grasped=info["is_grasped"],
             is_obj_placed=info["is_obj_placed"],
-            prompt=self._get_prompt(),
+            # prompt=self._get_prompt(),
         )
         if "state" in self.obs_mode:
             obs.update(
@@ -382,7 +382,7 @@ class PickCubeYCBEnv(BaseEnv):
                 cube_pose=self.source_obj.pose.raw_pose,
                 tcp_to_cube_pos=self.source_obj.pose.p - self.agent.tcp.pose.p,
                 cube_to_goal_pos=self.target_obj.pose.p - self.source_obj.pose.p,
-                prompt=self._get_prompt(),
+                # prompt=self._get_prompt(),
             )
         return obs
 

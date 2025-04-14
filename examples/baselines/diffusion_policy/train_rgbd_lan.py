@@ -1,7 +1,6 @@
 ALGO_NAME = "BC_Diffusion_rgbd_UNet"
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '0, 1'
 import random
 import time
 from collections import defaultdict
@@ -269,7 +268,7 @@ class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
 
 
 class Agent(nn.Module):
-    def __init__(self, env: VectorEnv, args: Args, device="cuda:1"):
+    def __init__(self, env: VectorEnv, args: Args, device="cuda:0"):
         super().__init__()
         self.device = device
         self.obs_horizon = args.obs_horizon
@@ -312,27 +311,27 @@ class Agent(nn.Module):
             from diffusion_policy.encoders.plain_conv import PlainConv
             self.visual_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
-            )
+            ).to(device)
         elif args.visual_encoder == 'clip':
             from diffusion_policy.encoders.clip import CLIPEncoder
             self.visual_encoder = CLIPEncoder(
                 out_dim=visual_feature_dim
-            )
+            ).to(device)
         elif args.visual_encoder == 'dinov2':
             from diffusion_policy.encoders.dinov2 import DINOv2Encoder
             self.visual_encoder = DINOv2Encoder(
                 out_dim=visual_feature_dim
-            )
+            ).to(device)
         elif args.visual_encoder == 'resnet':
             from diffusion_policy.encoders.resnet import ResNetEncoder
             self.visual_encoder = ResNetEncoder(
                 out_dim=visual_feature_dim, pool_feature_map=True
-            )
+            ).to(device)
         elif args.visual_encoder == 'siglip':
             from diffusion_policy.encoders.siglip import SigLIP2Encoder
             self.visual_encoder = SigLIP2Encoder(
                 out_dim=visual_feature_dim
-            )
+            ).to(device)
         elif args.visual_encoder == "shared":
             from transformers import SiglipVisionModel, AutoProcessor
             if self.vision_model is  None:
@@ -517,8 +516,6 @@ class Agent(nn.Module):
         visual_features, obs_cond = self.encode_obs(obs_seq, eval_mode=False)
 
         # Handle language condition if available
-        if text_instructions is None:
-            text_instructions = [args.prompt] * len(obs_seq['rgb'])
         if self.use_language and text_instructions is not None:
             language_feature = self.encode_language(text_instructions, obs_seq=obs_seq, eval_mode=False)
 
@@ -620,10 +617,9 @@ class Agent(nn.Module):
             visual_features, obs_cond = self.encode_obs(obs_seq, eval_mode=True)
 
             # Handle language condition if available
-            if text_instructions is None:
-                text_instructions = [args.prompt] * len(obs_seq['rgb'])
             if self.use_language and text_instructions is not None:
-                language_feature = self.encode_language(text_instructions, obs_seq=obs_seq, eval_mode=True)
+                text_input = [text_instructions[0]] * len(obs_seq['rgb'])
+                language_feature = self.encode_language(text_input, obs_seq=obs_seq, eval_mode=True)
 
                 if self.language_condition_type == "concat":
                     # Simple concatenation of features
@@ -743,7 +739,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda:1" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # create evaluation environment
     env_kwargs = dict(
@@ -839,7 +835,7 @@ if __name__ == "__main__":
         name="cosine",
         optimizer=optimizer,
         num_warmup_steps=500,
-        num_training_steps=args.total_iters,
+        num_training_steps=args.save_freq,
     )
 
     # Exponential Moving Average
@@ -857,8 +853,12 @@ if __name__ == "__main__":
             last_tick = time.time()
             ema.copy_to(ema_agent.parameters())
             eval_metrics = evaluate(
-                args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
+                10, ema_agent, envs, device, args.sim_backend
             )
+            if np.mean(eval_metrics['success_at_end']) >= 0.5:
+                eval_metrics = evaluate(
+                    args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
+                )
             timings["eval"] += time.time() - last_tick
 
             print(f"Evaluated {len(eval_metrics['success_at_end'])} episodes")
