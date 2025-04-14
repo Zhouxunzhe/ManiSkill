@@ -35,9 +35,6 @@ from .hyper_net.hypernetwork import Hypernet
 from diffusers.optimization import get_scheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-
 
 prompt2task_dict = {
     "pick red cube and place on plate.": "human_pick_red_cube_place_plate",
@@ -57,67 +54,6 @@ for prompt in prompt2task_dict.keys():
     if prompt not in prompt2label_dict:
         prompt2label_dict[prompt] = label_counter
         label_counter += 1
-
-def augment_video_batch(videos, strength=0.2):
-    """
-    Apply consistent augmentations to each video in the batch.
-
-    Args:
-        videos: Tensor of shape [B, T, H, W, C]
-        strength: Augmentation strength factor
-
-    Returns:
-        Augmented videos tensor of same shape
-    """
-    B, T, H, W, C = videos.shape
-    augmented = videos.clone()
-
-    for b in range(B):
-        # Apply consistent augmentation for each video
-        if torch.rand(1).item() < 0.5:  # 50% chance of horizontal flip
-            augmented[b] = torch.flip(augmented[b], [2])
-
-        # Random brightness and contrast
-        if torch.rand(1).item() < 0.8:  # 80% chance of adjustment
-            brightness = 1.0 + (torch.rand(1).item() * 2 - 1) * strength
-            contrast = 1.0 + (torch.rand(1).item() * 2 - 1) * strength
-            augmented[b] = torch.clamp(contrast * (augmented[b] - 0.5) + 0.5 + brightness - 1, 0, 1)
-
-    return augmented
-
-# Feature visualization function
-def visualize_features(features, labels, step, writer):
-    """
-    Create t-SNE visualization of feature embeddings and log to TensorBoard.
-
-    Args:
-        features: Feature embeddings tensor
-        labels: Corresponding class labels tensor
-        step: Current training step
-        writer: TensorBoard SummaryWriter instance
-    """
-    try:
-        # Convert to CPU numpy arrays
-        features_np = features.detach().cpu().numpy()
-        labels_np = labels.detach().cpu().numpy()
-
-        # t-SNE dimensionality reduction
-        tsne = TSNE(n_components=2, random_state=42)
-        features_2d = tsne.fit_transform(features_np)
-
-        # Create scatter plot
-        plt.figure(figsize=(10, 8))
-        for label in np.unique(labels_np):
-            mask = labels_np == label
-            plt.scatter(features_2d[mask, 0], features_2d[mask, 1], label=f'Task {label}')
-
-        plt.legend()
-        plt.title(f'Feature Space Visualization - Step {step}')
-
-        # Save to TensorBoard
-        writer.add_figure('feature_visualization', plt.gcf(), step)
-    except Exception as e:
-        print(f"Failed to generate feature visualization: {e}")
 
 # Enhanced Video Encoder with Task-specific Feature Extraction
 class VideoEncoder(nn.Module):
@@ -408,8 +344,8 @@ class HypernetDataset(Dataset):
         obs_seq = {}
         for k, v in obs_traj.items():
             obs_seq[k] = v[
-                         max(0, start):start + self.obs_horizon
-                         ].to(self.device)
+                max(0, start):start + self.obs_horizon
+            ].to(self.device)
             if start < 0:
                 pad_obs_seq = torch.stack([obs_seq[k][0]] * abs(start), dim=0)
                 obs_seq[k] = torch.cat((pad_obs_seq, obs_seq[k]), dim=0).to(self.device)
@@ -565,11 +501,8 @@ class Agent(nn.Module):
         labels = data_batch["label"].to(self.device)
         B = obs_seq["state"].shape[0]
 
-        # Apply video augmentation during training
-        augmented_videos = augment_video_batch(videos)
-
         # Get task features and task classification logits from video encoder
-        ftask, task_logits, contrastive_features = self.video_encoder(augmented_videos)
+        ftask, task_logits, contrastive_features = self.video_encoder(videos)
 
         def augment_features(features, strength=0.1):
             # Add small random noise during training to improve robustness
@@ -1002,8 +935,6 @@ if __name__ == "__main__":
                     print(
                         f"New best {k}_rate: {eval_metrics[k]:.4f}. Saving checkpoint."
                     )
-
-
     def log_metrics(iteration):
         if iteration % args.log_freq == 0:
             writer.add_scalar(
@@ -1015,20 +946,6 @@ if __name__ == "__main__":
                 writer.add_scalar(f"losses/{k}", v, iteration)
             for k, v in timings.items():
                 writer.add_scalar(f"time/{k}", v, iteration)
-
-            # Feature visualization (less frequently to avoid slowing down training)
-            if iteration % (args.log_freq * 10) == 0 and iteration > 0:
-                # Get a small batch for visualization
-                vis_batch = next(iter(DataLoader(dataset, batch_size=args.batch_size)))
-                videos = vis_batch["video"].to(device)
-                labels = vis_batch["label"].to(device)
-
-                # Extract features without gradient computation
-                with torch.no_grad():
-                    _, _, contrastive_features = agent.video_encoder(videos)
-
-                # Visualize and log
-                visualize_features(contrastive_features, labels, iteration, writer)
 
     # 训练循环
     agent.train()
