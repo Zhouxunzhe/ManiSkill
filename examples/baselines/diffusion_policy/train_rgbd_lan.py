@@ -325,7 +325,7 @@ class Agent(nn.Module):
         elif args.visual_encoder == 'resnet':
             from diffusion_policy.encoders.resnet import ResNetEncoder
             self.visual_encoder = ResNetEncoder(
-                out_dim=visual_feature_dim, pool_feature_map=True
+                in_channels=total_visual_channels, out_dim=visual_feature_dim
             ).to(device)
         elif args.visual_encoder == 'siglip':
             from diffusion_policy.encoders.siglip import SigLIP2Encoder
@@ -835,7 +835,7 @@ if __name__ == "__main__":
         name="cosine",
         optimizer=optimizer,
         num_warmup_steps=500,
-        num_training_steps=args.save_freq,
+        num_training_steps=args.total_iters,
     )
 
     # Exponential Moving Average

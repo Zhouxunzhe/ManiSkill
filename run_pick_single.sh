@@ -1,12 +1,12 @@
 # Motion planning to collect pd_joint_pos data
 python -m mani_skill.examples.motionplanning.panda.run \
-  --traj-name "pick_red_cube_plate.rgbd.pd_joint_pos.cpu" -e "PickCubeYCB-v1" -n 80 \
+  --traj-name "single_pick_red_cube_plate.rgbd.pd_joint_pos.cpu" -e "PickCubeYCB-v1" -n 80 \
   --obs-mode rgbd --only-count-success -b cpu --shader rt --num-procs 1
 
 # Replay data to get delta pos
 python -m mani_skill.trajectory.replay_trajectory \
-  --traj-path /home/engram/zhouxunzhe/ManiSkill/demos/PickCubeYCB-v1/motionplanning/pick_red_cube_plate.rgbd.pd_joint_pos.cpu.h5 \
-  --use-first-env-state -c pd_joint_delta_pos -o rgbd   --save-traj
+  --traj-path /home/engram/zhouxunzhe/ManiSkill/demos/PickCubeYCB-v1/motionplanning/single_pick_red_cube_plate.rgbd.pd_joint_pos.cpu.h5 \
+  --use-first-env-state -c pd_joint_delta_pos -o rgbd   --save-traj --shader rt --max-retry 5
 
 # python -m mani_skill.trajectory.replay_trajectory \
 #   --traj-path /home/engram/zhouxunzhe/ManiSkill/demos/test/pick_red_cube_plate_stable.rgbd.pd_joint_pos.cpu.h5 \

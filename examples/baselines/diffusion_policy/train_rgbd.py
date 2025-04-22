@@ -71,16 +71,16 @@ class Args:
     lr: float = 1e-4
     """the learning rate of the diffusion policy"""
     obs_horizon: int = 2  # Seems not very important in ManiSkill, 1, 2, 4 work well
-    act_horizon: int = 8  # Seems not very important in ManiSkill, 4, 8, 15 work well
+    act_horizon: int = 4  # Seems not very important in ManiSkill, 4, 8, 15 work well
     pred_horizon: int = (
         16  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     )
-    diffusion_step_embed_dim: int = 64  # not very important
+    diffusion_step_embed_dim: int = 32  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [64, 128, 256]
+        default_factory=lambda: [48, 72, 96]
     )  # default setting is about ~4.5M params
     n_groups: int = (
-        8  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+        4  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
     )
 
     # Environment/experiment specific arguments
@@ -361,7 +361,7 @@ class Agent(nn.Module):
 
         return F.mse_loss(noise_pred, noise)
 
-    def get_action(self, obs_seq):
+    def get_action(self, obs_seq, prompt):
         # init scheduler
         # self.noise_scheduler.set_timesteps(self.num_diffusion_iters)
         # set_timesteps will change noise_scheduler.timesteps is only used in noise_scheduler.step()

@@ -58,7 +58,7 @@ class PickCubeYCBEnv(BaseEnv):
         self,
         *args,
         robot_uids="panda_wristcam",
-        robot_init_qpos_noise=0.03,
+        robot_init_qpos_noise=0.04,
         num_envs=1,
         reconfiguration_freq=None,
         **kwargs,

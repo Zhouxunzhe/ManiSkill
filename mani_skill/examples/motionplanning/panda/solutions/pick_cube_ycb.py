@@ -22,8 +22,8 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     )
 
     FINGER_LENGTH = 0.025
-    RAND_WEIGHT = 0.03
-    RAND_WEIGHT = 0.0
+    RAND_WEIGHT = 0.04
+    # RAND_WEIGHT = 0.0
     env = env.unwrapped
 
     obb = get_actor_obb(env.source_obj)
@@ -40,28 +40,28 @@ def solve(env: PickCubeYCBEnv, seed=None, debug=False, vis=False):
     )
     closing, center = grasp_info["closing"], grasp_info["center"]
     grasp_pose = env.agent.build_grasp_pose(approaching, closing, env.source_obj.pose.sp.p)
-    # reach_pose1 = grasp_pose * sapien.Pose([
-    #     0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
-    #     0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
-    #     -0.3 + np.random.uniform(-1, 1) * RAND_WEIGHT
-    # ])
-    reach_pose2 = grasp_pose * sapien.Pose([
+    reach_pose1 = grasp_pose * sapien.Pose([
         0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
         0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
-        -0.2 + np.random.uniform(-1, 1) * RAND_WEIGHT
+        -0.3 + np.random.uniform(-1, 1) * RAND_WEIGHT
     ])
-    # reach_pose3 = grasp_pose * sapien.Pose([
+    # reach_pose2 = grasp_pose * sapien.Pose([
     #     0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
     #     0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
-    #     -0.1 + np.random.uniform(-1, 1) * RAND_WEIGHT
+    #     -0.2 + np.random.uniform(-1, 1) * RAND_WEIGHT
     # ])
+    reach_pose3 = grasp_pose * sapien.Pose([
+        0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
+        0 + np.random.uniform(-1, 1) * RAND_WEIGHT,
+        -0.1 + np.random.uniform(-1, 1) * RAND_WEIGHT
+    ])
 
     # -------------------------------------------------------------------------- #
     # Reach
     # -------------------------------------------------------------------------- #
-    # planner.move_to_pose_with_screw(reach_pose1)
-    planner.move_to_pose_with_screw(reach_pose2)
-    # planner.move_to_pose_with_screw(reach_pose3)
+    planner.move_to_pose_with_screw(reach_pose1)
+    # planner.move_to_pose_with_screw(reach_pose2)
+    planner.move_to_pose_with_screw(reach_pose3)
 
     # -------------------------------------------------------------------------- #
     # Grasp
