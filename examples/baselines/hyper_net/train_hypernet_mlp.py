@@ -27,7 +27,7 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from .hyper_net.hypernetwork import Hypernet, TargetNet, MLP
+from .hyper_net.hypernetwork_v0 import Hypernet, TargetNet, MLP
 from .hyper_net.evaluate_mlp import evaluate
 from .hyper_net.make_env import make_eval_envs
 from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,

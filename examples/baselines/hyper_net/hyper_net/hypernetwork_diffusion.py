@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Union, List, Dict
-from .hypernetwork import TargetNet
+from .hypernetwork_v0 import TargetNet
 
 
 # Keep the original helper modules

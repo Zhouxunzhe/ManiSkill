@@ -42,6 +42,13 @@ python -m examples.baselines.diffusion_policy.train_rgbd_video --env-id PickCube
   --obs_mode rgb+depth --exp_name PickCubeYCB-multi_task_4-diffusion_video-lower-diffusion-320 \
   --wandb_project_name PickCubeYCB-multi_task_4-diffusion_video-lower-diffusion-320 --lr 1e-6 --track
 
+# Eval diffusion policy
+python -m examples.baselines.diffusion_policy.eval_rgbd_video --env-id PickCubeYCB-v1 \
+  --video-path /home/engram/zhouxunzhe/ManiSkill/examples/baselines/hyper_net/processed_data \
+  --control-mode "pd_joint_delta_pos" --shader rt --max_episode_steps 500 \
+  --num_eval_episodes 100 --num_eval_envs 1 \
+  --obs_mode rgb+depth --exp_name PickCubeYCB-multi_task_4-diffusion_video-lower-diffusion-320
+
 # Train HyperNet
 python -m examples.baselines.hyper_net.train_hypernet_diffusion_resnet --env-id PickCubeYCB-v1 \
   --demo-path /home/engram/zhouxunzhe/ManiSkill/demos/PickCubeYCB-v1/motionplanning/multi_task_2.rgbd.pd_joint_delta_pos.physx_cpu.h5 \
@@ -49,7 +56,7 @@ python -m examples.baselines.hyper_net.train_hypernet_diffusion_resnet --env-id 
   --control-mode "pd_joint_delta_pos" --shader rt --num-demos 160 --max_episode_steps 500 --total_iters 100000 --batch_size 128 \
   --log_freq 10 --eval_freq 5000 --save_freq 10000 --num_eval_episodes 100 --num_eval_envs 1 \
   --obs_mode rgb+depth --exp_name PickCubeYCB-multi_task_2-hypernet_diffusion_resnet-160 \
-  --wandb_project_name PickCubeYCB-multi_task_2-hypernet_diffusion-160 --track
+  --wandb_project_name PickCubeYCB-multi_task_2-hypernet_diffusion-160 --lr 1e-6 --track
 
 python -m examples.baselines.hyper_net.train_hypernet_diffusion_resnet --env-id PickCubeYCB-v1 \
   --demo-path /home/engram/zhouxunzhe/ManiSkill/demos/PickCubeYCB-v1/motionplanning/multi_task_4.rgbd.pd_joint_delta_pos.physx_cpu.h5 \
@@ -57,7 +64,15 @@ python -m examples.baselines.hyper_net.train_hypernet_diffusion_resnet --env-id 
   --control-mode "pd_joint_delta_pos" --shader rt --num-demos 320 --max_episode_steps 500 --total_iters 100000 --batch_size 128 \
   --log_freq 10 --eval_freq 5000 --save_freq 10000 --num_eval_episodes 100 --num_eval_envs 1 \
   --obs_mode rgb+depth --exp_name PickCubeYCB-multi_task_4-hypernet_diffusion_resnet-320 \
-  --wandb_project_name PickCubeYCB-multi_task_4-hypernet_diffusion-320 --lr 1e-6 --track
+  --wandb_project_name PickCubeYCB-multi_task_4-hypernet_diffusion_resnet-320 --lr 1e-6 --track
+
+python -m examples.baselines.hyper_net.train_hypernet_diffusion_resnet_hyper_v3 --env-id PickCubeYCB-v1 \
+  --demo-path /home/engram/zhouxunzhe/ManiSkill/demos/PickCubeYCB-v1/motionplanning/multi_task_4.rgbd.pd_joint_delta_pos.physx_cpu.h5 \
+  --video-path /home/engram/zhouxunzhe/ManiSkill/examples/baselines/hyper_net/processed_data \
+  --control-mode "pd_joint_delta_pos" --shader rt --num-demos 320 --max_episode_steps 500 --total_iters 100000 --batch_size 128 \
+  --log_freq 10 --eval_freq 5000 --save_freq 10000 --num_eval_episodes 100 --num_eval_envs 1 \
+  --obs_mode rgb+depth --exp_name PickCubeYCB-multi_task_4-hypernet_diffusion_resnet-hyper_v3-320 \
+  --wandb_project_name PickCubeYCB-multi_task_4-hypernet_diffusion_resnet-hyper_v3-320 --lr 1e-6 --track
 
 # Train MLP
 # python -m examples.baselines.hyper_net.train_mlp --env-id PickCubeYCB-v1 \
