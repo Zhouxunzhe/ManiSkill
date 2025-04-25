@@ -31,10 +31,7 @@ from .hyper_net.make_env import make_eval_envs
 from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
 from .hyper_net.hypernetwork_diffusion import UNetPolicy
-from .hyper_net.hypernetwork_v0 import Hypernet
-from .hyper_net.hypernetwork_v1 import SharedParamHypernet
-from .hyper_net.hypernetwork_v2 import RNNHypernet, EfficientHypernet
-from .hyper_net.hypernetwork_v3 import ImprovedHypernet
+from .hyper_net.hypernetwork import Hypernet
 from diffusers.optimization import get_scheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
@@ -1103,7 +1100,7 @@ if __name__ == "__main__":
             eval_metrics = evaluate(
                 10, agent, envs, device, args.sim_backend, val_videos=val_videos
             )
-            if np.mean(eval_metrics['success_at_end']) >= 0.5:
+            if np.mean(eval_metrics['success_at_end']) >= 0.3:
                 eval_metrics = evaluate(
                     args.num_eval_episodes, agent, envs, device, args.sim_backend, val_videos=val_videos
                 )

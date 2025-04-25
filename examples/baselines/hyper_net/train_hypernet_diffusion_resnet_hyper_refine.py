@@ -31,10 +31,8 @@ from .hyper_net.make_env import make_eval_envs
 from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
 from .hyper_net.hypernetwork_diffusion import UNetPolicy
-from .hyper_net.hypernetwork_v0 import Hypernet
-from .hyper_net.hypernetwork_v1 import SharedParamHypernet
-from .hyper_net.hypernetwork_v2 import RNNHypernet, EfficientHypernet
-from .hyper_net.hypernetwork_v3 import ImprovedHypernet
+from .hyper_net.hypernetwork import Hypernet
+from .hyper_net.hypernetwork_refine import OptimizedHypernet
 from diffusers.optimization import get_scheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
@@ -673,11 +671,11 @@ class Agent(nn.Module):
 
         # 初始化你的网络组件
         fobs_dim = 256
-        ftask_dim = 256
+        ftask_dim = 512
         weight_dim = 256
-        deriv_hidden_dim = 128
+        deriv_hidden_dim = 256
         driv_num_layers = 4
-        codec_hidden_dim = 128
+        codec_hidden_dim = 256
         codec_num_layers = 4
         num_layers = 4
         if args.visual_encoder == 'plain_conv':
@@ -714,13 +712,13 @@ class Agent(nn.Module):
         self.up_path_target = self.noise_pred_net.unet.up_path_target
 
         # Define Hypernets for each TargetNet
-        self.hypernet_down_path = ImprovedHypernet(
+        self.hypernet_down_path = OptimizedHypernet(
             self.down_path_target, ftask_dim, weight_dim, deriv_hidden_dim, driv_num_layers,
-            codec_hidden_dim, codec_num_layers, num_layers
+            codec_hidden_dim, codec_num_layers, num_layers, args.lr
         ).to(device)
-        self.hypernet_up_path = ImprovedHypernet(
+        self.hypernet_up_path = OptimizedHypernet(
             self.up_path_target, ftask_dim, weight_dim, deriv_hidden_dim, driv_num_layers,
-            codec_hidden_dim, codec_num_layers, num_layers
+            codec_hidden_dim, codec_num_layers, num_layers, args.lr
         ).to(device)
 
         # Add He initialization
@@ -1103,7 +1101,7 @@ if __name__ == "__main__":
             eval_metrics = evaluate(
                 10, agent, envs, device, args.sim_backend, val_videos=val_videos
             )
-            if np.mean(eval_metrics['success_at_end']) >= 0.5:
+            if np.mean(eval_metrics['success_at_end']) >= 0.4:
                 eval_metrics = evaluate(
                     args.num_eval_episodes, agent, envs, device, args.sim_backend, val_videos=val_videos
                 )

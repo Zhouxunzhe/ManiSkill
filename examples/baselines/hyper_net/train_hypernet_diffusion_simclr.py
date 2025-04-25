@@ -31,7 +31,7 @@ from .hyper_net.make_env import make_eval_envs
 from .hyper_net.utils import (IterationBasedBatchSampler, build_state_obs_extractor,
                                     convert_obs, worker_init_fn)
 from .hyper_net.hypernetwork_diffusion import UNetPolicy
-from .hyper_net.hypernetwork_v0 import Hypernet
+from .hyper_net.hypernetwork import Hypernet
 from diffusers.optimization import get_scheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from diffusion_policy.encoders.plain_conv import PlainConv
