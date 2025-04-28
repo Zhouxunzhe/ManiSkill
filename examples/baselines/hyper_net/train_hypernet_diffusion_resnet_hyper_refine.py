@@ -671,12 +671,13 @@ class Agent(nn.Module):
 
         # 初始化你的网络组件
         fobs_dim = 256
-        ftask_dim = 512
+        ftask_dim = 256
         weight_dim = 256
         deriv_hidden_dim = 256
         driv_num_layers = 4
         codec_hidden_dim = 256
         codec_num_layers = 4
+        hidden_dim = 128
         num_layers = 4
         if args.visual_encoder == 'plain_conv':
             self.obs_encoder = PlainConv(
@@ -720,6 +721,12 @@ class Agent(nn.Module):
             self.up_path_target, ftask_dim, weight_dim, deriv_hidden_dim, driv_num_layers,
             codec_hidden_dim, codec_num_layers, num_layers, args.lr
         ).to(device)
+        # self.hypernet_down_path = OptimizedHypernet(
+        #     self.down_path_target, ftask_dim, weight_dim, hidden_dim, num_layers, args.lr
+        # ).to(device)
+        # self.hypernet_up_path = OptimizedHypernet(
+        #     self.up_path_target, ftask_dim, weight_dim, hidden_dim, num_layers, args.lr
+        # ).to(device)
 
         # Add He initialization
         for m in self.modules():
@@ -1076,8 +1083,8 @@ if __name__ == "__main__":
     # Configure parameter groups with different learning rates
     param_groups = [
         {"params": diffusion_params, "lr": args.lr, "name": "diffusion"},
-        {"params": video_encoder_params, "lr": args.lr, "name": "video_encoder"},
-        {"params": obs_encoder_params, "lr": args.lr, "name": "obs_encoder"}
+        {"params": video_encoder_params, "lr": args.lr * 100, "name": "video_encoder"},
+        {"params": obs_encoder_params, "lr": args.lr * 100, "name": "obs_encoder"}
     ]
     # Initialize optimizer with parameter groups
     optimizer = optim.AdamW(

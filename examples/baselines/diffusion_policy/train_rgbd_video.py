@@ -1012,7 +1012,7 @@ if __name__ == "__main__":
             train_videos[task_name] = [videos[task_name][i] for i in train_indices]
             val_videos[task_name] = ([videos[task_name][i] for i in val_indices])
 
-    val_videos = train_videos
+    # val_videos = train_videos
 
     dataset = SmallDemoDataset_DiffusionPolicy(
         data_path=args.demo_path,
@@ -1047,7 +1047,7 @@ if __name__ == "__main__":
 
     # Configure parameter groups with different learning rates
     param_groups = [
-        {"params": diffusion_params, "lr": args.lr * 100, "name": "diffusion"},
+        {"params": diffusion_params, "lr": args.lr, "name": "diffusion"},
         {"params": video_encoder_params, "lr": args.lr, "name": "video_encoder"},
         {"params": obs_encoder_params, "lr": args.lr, "name": "obs_encoder"}
     ]
@@ -1073,7 +1073,7 @@ if __name__ == "__main__":
             eval_metrics = evaluate(
                 10, agent, envs, device, args.sim_backend, val_videos=val_videos
             )
-            if np.mean(eval_metrics['success_at_end']) >= 0.5:
+            if np.mean(eval_metrics['success_at_end']) >= 0.4:
                 eval_metrics = evaluate(
                     args.num_eval_episodes, agent, envs, device, args.sim_backend, val_videos=val_videos
                 )
