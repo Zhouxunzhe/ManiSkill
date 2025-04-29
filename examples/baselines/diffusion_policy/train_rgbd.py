@@ -450,7 +450,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # create evaluation environment
     env_kwargs = dict(
@@ -563,8 +563,12 @@ if __name__ == "__main__":
             last_tick = time.time()
             ema.copy_to(ema_agent.parameters())
             eval_metrics = evaluate(
-                args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
+                10, ema_agent, envs, device, args.sim_backend
             )
+            if np.mean(eval_metrics['success_at_end']) >= 0.1:
+                eval_metrics = evaluate(
+                    args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
+                )
             timings["eval"] += time.time() - last_tick
 
             print(f"Evaluated {len(eval_metrics['success_at_end'])} episodes")

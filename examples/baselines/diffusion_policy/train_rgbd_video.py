@@ -670,7 +670,7 @@ class Agent(nn.Module):
 
         # 初始化你的网络组件
         fobs_dim = 256
-        self.ftask_dim = 512
+        self.ftask_dim = 256
         if args.visual_encoder == 'plain_conv':
             self.obs_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=fobs_dim, pool_feature_map=True
