@@ -183,6 +183,7 @@ class VideoEncoder(nn.Module):
 @dataclass
 class Args:
     exp_name: Optional[str] = None
+    ckpt_exp_name: Optional[str] = None
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -423,6 +424,11 @@ def load_videos(video_path):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    if args.ckpt_exp_name is None:
+        args.ckpt_exp_name = os.path.basename(__file__)[: -len(".py")]
+        ckpt_name = f"{args.env_id}__{args.ckpt_exp_name}__{args.seed}__{int(time.time())}"
+    else:
+        ckpt_name = args.ckpt_exp_name
 
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
@@ -471,7 +477,7 @@ if __name__ == "__main__":
     )
 
     # Initialize tensorboard writer
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs/{ckpt_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s"
@@ -482,8 +488,8 @@ if __name__ == "__main__":
     agent = Agent(envs, args, device)
 
     # Load checkpoint
-    agent = load_ckpt(run_name, "best_eval_success_at_end", agent)
-    print(f"Loaded checkpoint from runs/{run_name}/checkpoints/best_eval_success_at_end.pt")
+    agent = load_ckpt(ckpt_name, "best_eval_success_at_end", agent)
+    print(f"Loaded checkpoint from runs/{ckpt_name}/checkpoints/best_eval_success_at_end.pt")
 
     # Evaluate agent
     print("==================== Eval Begin ====================")

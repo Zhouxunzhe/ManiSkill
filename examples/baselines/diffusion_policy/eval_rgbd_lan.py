@@ -39,6 +39,7 @@ from diffusion_policy.utils import (IterationBasedBatchSampler,
 @dataclass
 class Args:
     exp_name: Optional[str] = None
+    ckpt_exp_name: Optional[str] = None
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -76,12 +77,12 @@ class Args:
     pred_horizon: int = (
         16  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     )
-    diffusion_step_embed_dim: int = 64  # not very important
+    diffusion_step_embed_dim: int = 32  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [64, 128, 256]
+        default_factory=lambda: [48, 72, 96]
     )  # default setting is about ~4.5M params
     n_groups: int = (
-        8  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+        4  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
     )
 
     # Environment/experiment specific arguments
@@ -123,8 +124,153 @@ class Args:
     demo_type: Optional[str] = None
 
 
+def reorder_keys(d, ref_dict):
+    out = dict()
+    for k, v in ref_dict.items():
+        if isinstance(v, dict) or isinstance(v, spaces.Dict):
+            out[k] = reorder_keys(d[k], ref_dict[k])
+        else:
+            out[k] = d[k]
+    return out
+
+
+class SmallDemoDataset_DiffusionPolicy(Dataset):  # Load everything into memory
+    def __init__(self, data_path, obs_process_fn, obs_space, include_rgb, include_depth, device, num_traj,
+                 use_language=False):
+        self.include_rgb = include_rgb
+        self.include_depth = include_depth
+        self.use_language = use_language
+
+        from diffusion_policy.utils import load_demo_dataset_with_lan
+        trajectories = load_demo_dataset_with_lan(data_path, num_traj=num_traj, concat=False)
+
+        print("Raw trajectory loaded, beginning observation pre-processing...")
+
+        # Pre-process the observations, make them align with the obs returned by the obs_wrapper
+        obs_traj_dict_list = []
+        for obs_traj_dict in trajectories["observations"]:
+            _obs_traj_dict = reorder_keys(
+                obs_traj_dict, obs_space
+            )  # key order in demo is different from key order in env obs
+            _obs_traj_dict = obs_process_fn(_obs_traj_dict)
+            if self.include_depth:
+                _obs_traj_dict["depth"] = torch.Tensor(
+                    _obs_traj_dict["depth"].astype(np.float32)
+                ).to(device=device, dtype=torch.float16)
+            if self.include_rgb:
+                _obs_traj_dict["rgb"] = torch.from_numpy(_obs_traj_dict["rgb"]).to(
+                    device
+                )  # still uint8
+            _obs_traj_dict["state"] = torch.from_numpy(_obs_traj_dict["state"]).to(
+                device
+            )
+            obs_traj_dict_list.append(_obs_traj_dict)
+        trajectories["observations"] = obs_traj_dict_list
+        self.obs_keys = list(_obs_traj_dict.keys())
+
+        # Process language descriptions if available
+        if self.use_language and "language" in trajectories:
+            self.trajectory_language = trajectories["language"]
+        else:
+            # Create empty language placeholders if not available in dataset
+            self.trajectory_language = [args.prompt] * len(trajectories["actions"])
+
+        # Pre-process the actions
+        for i in range(len(trajectories["actions"])):
+            trajectories["actions"][i] = torch.Tensor(trajectories["actions"][i]).to(
+                device=device
+            )
+        print(
+            "Obs/action pre-processing is done, start to pre-compute the slice indices..."
+        )
+
+        # Pre-compute all possible (traj_idx, start, end) tuples, this is very specific to Diffusion Policy
+        if (
+                "delta_pos" in args.control_mode
+                or args.control_mode == "base_pd_joint_vel_arm_pd_joint_vel"
+        ):
+            print(
+                "Detected a delta controller type, padding with a zero action to ensure the arm stays still after solving tasks.")
+            self.pad_action_arm = torch.zeros(
+                (trajectories["actions"][0].shape[1] - 1,), device=device
+            )
+            # to make the arm stay still, we pad the action with 0 in 'delta_pos' control mode
+            # gripper action needs to be copied from the last action
+        else:
+            # NOTE for absolute joint pos control probably should pad with the final joint position action.
+            raise NotImplementedError(f"Control Mode {args.control_mode} not supported")
+
+        self.obs_horizon, self.pred_horizon = obs_horizon, pred_horizon = (
+            args.obs_horizon,
+            args.pred_horizon,
+        )
+        self.slices = []
+        num_traj = len(trajectories["actions"])
+        total_transitions = 0
+        for traj_idx in range(num_traj):
+            L = trajectories["actions"][traj_idx].shape[0]
+            assert trajectories["observations"][traj_idx]["state"].shape[0] == L + 1
+            total_transitions += L
+
+            # |o|o|                             observations: 2
+            # | |a|a|a|a|a|a|a|a|               actions executed: 8
+            # |p|p|p|p|p|p|p|p|p|p|p|p|p|p|p|p| actions predicted: 16
+            pad_before = obs_horizon - 1
+            # Pad before the trajectory, so the first action of an episode is in "actions executed"
+            # obs_horizon - 1 is the number of "not used actions"
+            pad_after = pred_horizon - obs_horizon
+            # Pad after the trajectory, so all the observations are utilized in training
+            # Note that in the original code, pad_after = act_horizon - 1, but I think this is not the best choice
+            self.slices += [
+                (traj_idx, start, start + pred_horizon)
+                for start in range(-pad_before, L - pred_horizon + pad_after)
+            ]  # slice indices follow convention [start, end)
+
+        print(
+            f"Total transitions: {total_transitions}, Total obs sequences: {len(self.slices)}"
+        )
+
+        self.trajectories = trajectories
+
+    def __getitem__(self, index):
+        traj_idx, start, end = self.slices[index]
+        L, act_dim = self.trajectories["actions"][traj_idx].shape
+
+        obs_traj = self.trajectories["observations"][traj_idx]
+        obs_seq = {}
+        for k, v in obs_traj.items():
+            obs_seq[k] = v[
+                         max(0, start): start + self.obs_horizon
+                         ]  # start+self.obs_horizon is at least 1
+            if start < 0:  # pad before the trajectory
+                pad_obs_seq = torch.stack([obs_seq[k][0]] * abs(start), dim=0)
+                obs_seq[k] = torch.cat((pad_obs_seq, obs_seq[k]), dim=0)
+            # don't need to pad obs after the trajectory, see the above char drawing
+
+        act_seq = self.trajectories["actions"][traj_idx][max(0, start): end]
+        if start < 0:  # pad before the trajectory
+            act_seq = torch.cat([act_seq[0].repeat(-start, 1), act_seq], dim=0)
+        if end > L:  # pad after the trajectory
+            gripper_action = act_seq[-1, -1]  # assume gripper is with pos controller
+            pad_action = torch.cat((self.pad_action_arm, gripper_action[None]), dim=0)
+            act_seq = torch.cat([act_seq, pad_action.repeat(end - L, 1)], dim=0)
+            # making the robot (arm and gripper) stay still
+        assert (
+                obs_seq["state"].shape[0] == self.obs_horizon
+                and act_seq.shape[0] == self.pred_horizon
+        )
+        return {
+            "observations": obs_seq,
+            "actions": act_seq,
+            "language": self.trajectory_language[traj_idx]
+        }
+
+    def __len__(self):
+        return len(self.slices)
+
+
 class Agent(nn.Module):
-    def __init__(self, env: VectorEnv, args: Args, device="cuda:1"):
+    def __init__(self, env: VectorEnv, args: Args, device="cuda:0"):
         super().__init__()
         self.device = device
         self.obs_horizon = args.obs_horizon
@@ -157,7 +303,7 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         visual_feature_dim = 256
-        language_feature_dim = 256
+        language_feature_dim = 512
 
         self.vision_model = None
         self.processor = None
@@ -167,27 +313,27 @@ class Agent(nn.Module):
             from diffusion_policy.encoders.plain_conv import PlainConv
             self.visual_encoder = PlainConv(
                 in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
-            )
+            ).to(device)
         elif args.visual_encoder == 'clip':
             from diffusion_policy.encoders.clip import CLIPEncoder
             self.visual_encoder = CLIPEncoder(
                 out_dim=visual_feature_dim
-            )
+            ).to(device)
         elif args.visual_encoder == 'dinov2':
             from diffusion_policy.encoders.dinov2 import DINOv2Encoder
             self.visual_encoder = DINOv2Encoder(
                 out_dim=visual_feature_dim
-            )
+            ).to(device)
         elif args.visual_encoder == 'resnet':
             from diffusion_policy.encoders.resnet import ResNetEncoder
             self.visual_encoder = ResNetEncoder(
-                out_dim=visual_feature_dim, pool_feature_map=True
-            )
+                in_channels=total_visual_channels, out_dim=visual_feature_dim
+            ).to(device)
         elif args.visual_encoder == 'siglip':
             from diffusion_policy.encoders.siglip import SigLIP2Encoder
             self.visual_encoder = SigLIP2Encoder(
                 out_dim=visual_feature_dim
-            )
+            ).to(device)
         elif args.visual_encoder == "shared":
             from transformers import SiglipVisionModel, AutoProcessor
             if self.vision_model is  None:
@@ -372,8 +518,6 @@ class Agent(nn.Module):
         visual_features, obs_cond = self.encode_obs(obs_seq, eval_mode=False)
 
         # Handle language condition if available
-        if text_instructions is None:
-            text_instructions = [args.prompt] * len(obs_seq['rgb'])
         if self.use_language and text_instructions is not None:
             language_feature = self.encode_language(text_instructions, obs_seq=obs_seq, eval_mode=False)
 
@@ -475,10 +619,9 @@ class Agent(nn.Module):
             visual_features, obs_cond = self.encode_obs(obs_seq, eval_mode=True)
 
             # Handle language condition if available
-            if text_instructions is None:
-                text_instructions = [args.prompt] * len(obs_seq['rgb'])
             if self.use_language and text_instructions is not None:
-                language_feature = self.encode_language(text_instructions, obs_seq=obs_seq, eval_mode=True)
+                text_input = [text_instructions[0]] * len(obs_seq['rgb'])
+                language_feature = self.encode_language(text_input, obs_seq=obs_seq, eval_mode=True)
 
                 if self.language_condition_type == "concat":
                     # Simple concatenation of features
@@ -565,8 +708,8 @@ def save_ckpt(run_name, tag):
         f"runs/{run_name}/checkpoints/{tag}.pt",
     )
 
-def load_ckpt(run_name, tag):
-    checkpoint = torch.load(f"runs/{run_name}/checkpoints/{tag}.pt")
+def load_ckpt(ckpt_name, tag):
+    checkpoint = torch.load(f"runs/{ckpt_name}/checkpoints/{tag}.pt")
     agent.load_state_dict(checkpoint["agent"])
     ema_agent.load_state_dict(checkpoint["ema_agent"])
     return agent, ema_agent
@@ -574,6 +717,12 @@ def load_ckpt(run_name, tag):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+
+    if args.ckpt_exp_name is None:
+        args.ckpt_exp_name = os.path.basename(__file__)[: -len(".py")]
+        ckpt_name = f"{args.env_id}__{args.ckpt_exp_name}__{args.seed}__{int(time.time())}"
+    else:
+        ckpt_name = args.ckpt_exp_name
 
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
@@ -586,7 +735,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda:1" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # create evaluation environment
     env_kwargs = dict(
@@ -596,7 +745,7 @@ if __name__ == "__main__":
         render_mode="rgb_array",
         human_render_camera_configs=dict(shader_pack="default"),
         viewer_camera_configs=dict(shader_pack=args.shader),
-        mode="eval"
+        # mode="eval"
     )
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -620,7 +769,7 @@ if __name__ == "__main__":
     agent = Agent(envs, args, device=device)
     ema_agent = Agent(envs, args)
     # Load checkpoint
-    agent, ema_agent = load_ckpt(run_name, "best_eval_success_at_end")
+    agent, ema_agent = load_ckpt(ckpt_name, "best_eval_success_at_end")
     ema = EMAModel(parameters=agent.parameters(), power=0.75)
 
     best_eval_metrics = defaultdict(float)

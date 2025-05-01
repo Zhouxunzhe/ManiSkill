@@ -41,7 +41,7 @@ class Panda(BaseAgent):
                     -np.pi * 5 / 8,
                     0,
                     np.pi * 3 / 4,
-                    np.pi / 4,
+                    -np.pi / 4,
                     0.04,
                     0.04,
                 ]

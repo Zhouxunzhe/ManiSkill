@@ -28,6 +28,7 @@ from diffusion_policy.encoders.plain_conv import PlainConv
 @dataclass
 class Args:
     exp_name: Optional[str] = None
+    ckpt_exp_name: Optional[str] = None
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -44,12 +45,12 @@ class Args:
     capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
-    env_id: str = "PegInsertionSide-v0"
+    env_id: str = "PegInsertionSide-v1"
     """the id of the environment"""
     demo_path: str = (
-        "data/ms2_official_demos/rigid_body/PegInsertionSide-v0/trajectory.state.pd_ee_delta_pose.h5"
+        "demos/PegInsertionSide-v1/trajectory.state.pd_ee_delta_pose.physx_cpu.h5"
     )
-    """the path of demo dataset (pkl or h5)"""
+    """the path of demo dataset, it is expected to be a ManiSkill dataset h5py format file"""
     num_demos: Optional[int] = None
     """number of trajectories to load from the demo dataset"""
     total_iters: int = 1_000_000
@@ -61,28 +62,27 @@ class Args:
     lr: float = 1e-4
     """the learning rate of the diffusion policy"""
     obs_horizon: int = 2  # Seems not very important in ManiSkill, 1, 2, 4 work well
-    act_horizon: int = 8  # Seems not very important in ManiSkill, 4, 8, 15 work well
+    act_horizon: int = 4  # Seems not very important in ManiSkill, 4, 8, 15 work well
     pred_horizon: int = (
-        16
-    # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
+        16  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     )
-    diffusion_step_embed_dim: int = 64  # not very important
+    diffusion_step_embed_dim: int = 32  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [64, 128, 256]
+        default_factory=lambda: [48, 72, 96]
     )  # default setting is about ~4.5M params
     n_groups: int = (
-        8  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+        4  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
     )
-    depth: bool = False
-    """use depth to eval"""
 
     # Environment/experiment specific arguments
+    obs_mode: str = "rgb+depth"
+    """The observation mode to use for the environment, which dictates what visual inputs to pass to the model. Can be "rgb", "depth", or "rgb+depth"."""
     max_episode_steps: Optional[int] = None
     """Change the environments' max_episode_steps to this value. Sometimes necessary if the demonstrations being imitated are too short. Typically the default
     max episode steps of environments in ManiSkill are tuned lower so reinforcement learning agents can learn faster."""
     log_freq: int = 1000
     """the frequency of logging the training metrics"""
-    eval_freq: int = 2500
+    eval_freq: int = 5000
     """the frequency of evaluating the agent on the evaluation environments"""
     save_freq: Optional[int] = None
     """the frequency of saving the model checkpoints. By default this is None and will only save checkpoints based on the best evaluation metrics."""
@@ -90,7 +90,7 @@ class Args:
     """the number of episodes to evaluate the agent on"""
     num_eval_envs: int = 10
     """the number of parallel environments to evaluate the agent on"""
-    sim_backend: str = "cpu"
+    sim_backend: str = "physx_cpu"
     """the simulation backend to use for evaluation environments. can be "cpu" or "gpu"""
     num_dataload_workers: int = 0
     """the number of workers to use for loading the training data in the torch dataloader"""
@@ -99,33 +99,64 @@ class Args:
     shader: str = "default"
     """Change shader used for rendering. Default is 'default' which is very fast. Can also be 'rt' for ray tracing and generating photo-realistic renders. 
     Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
+    visual_encoder: str = "plain_conv"
+    """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
 
 
 class Agent(nn.Module):
-    def __init__(self, env, args):
+    def __init__(self, env, args: Args):
         super().__init__()
         self.obs_horizon = args.obs_horizon
         self.act_horizon = args.act_horizon
         self.pred_horizon = args.pred_horizon
         assert (
-                len(env.single_observation_space["state"].shape) == 2
+            len(env.single_observation_space["state"].shape) == 2
         )  # (obs_horizon, obs_dim)
         assert len(env.single_action_space.shape) == 1  # (act_dim, )
         assert (env.single_action_space.high == 1).all() and (
-                env.single_action_space.low == -1
+            env.single_action_space.low == -1
         ).all()
         # denoising results will be clipped to [-1,1], so the action should be in [-1,1] as well
         self.act_dim = env.single_action_space.shape[0]
         obs_state_dim = env.single_observation_space["state"].shape[1]
-        _, H, W, C = envs.single_observation_space["rgb"].shape
+        total_visual_channels = 0
+        self.include_rgb = "rgb" in env.single_observation_space.keys()
+        self.include_depth = "depth" in env.single_observation_space.keys()
+        self.include_depth = True
+
+        if self.include_rgb:
+            total_visual_channels += env.single_observation_space["rgb"].shape[-1]
+        if self.include_depth:
+            total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         visual_feature_dim = 256
-        in_c = int(C / 3 * 4) if args.depth else C
-        self.visual_encoder = PlainConv(
-            in_channels=in_c, out_dim=visual_feature_dim, pool_feature_map=True
-        )
+        if args.visual_encoder == 'plain_conv':
+            from diffusion_policy.encoders.plain_conv import PlainConv
+            self.visual_encoder = PlainConv(
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'clip':
+            from diffusion_policy.encoders.clip import CLIPEncoder
+            self.visual_encoder = CLIPEncoder(
+                out_dim=visual_feature_dim
+            )
+        elif args.visual_encoder == 'dinov2':
+            from diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            self.visual_encoder = DINOv2Encoder(
+                out_dim=visual_feature_dim
+            )
+        elif args.visual_encoder == 'resnet':
+            from diffusion_policy.encoders.resnet import ResNetEncoder
+            self.visual_encoder = ResNetEncoder(
+                out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'siglip':
+            from diffusion_policy.encoders.siglip import SigLIP2Encoder
+            self.visual_encoder = SigLIP2Encoder(
+                out_dim=visual_feature_dim
+            )
         self.noise_pred_net = ConditionalUnet1D(
             input_dim=self.act_dim,  # act_horizon is not used (U-Net doesn't care)
             global_cond_dim=self.obs_horizon * (visual_feature_dim + obs_state_dim),
@@ -142,18 +173,21 @@ class Agent(nn.Module):
         )
 
     def encode_obs(self, obs_seq, eval_mode):
-        rgb = obs_seq["rgb"].float() / 255.0  # (B, obs_horizon, 3*k, H, W)
-        if args.depth:
-            depth = obs_seq["depth"].float() / 1024.0  # (B, obs_horizon, 1*k, H, W)
-            img_seq = torch.cat([rgb, depth], dim=2)  # (B, obs_horizon, C, H, W), C=4*k
-        else:
+        if self.include_rgb:
+            rgb = obs_seq["rgb"].float() / 255.0  # (B, obs_horizon, 3*k, H, W)
             img_seq = rgb
+        if self.include_depth:
+            depth = obs_seq["depth"].float() / 1024.0  # (B, obs_horizon, 1*k, H, W)
+            img_seq = depth
+        if self.include_rgb and self.include_depth:
+            img_seq = torch.cat([rgb, depth], dim=2)  # (B, obs_horizon, C, H, W), C=4*k
+        batch_size = img_seq.shape[0]
         img_seq = img_seq.flatten(end_dim=1)  # (B*obs_horizon, C, H, W)
         if hasattr(self, "aug") and not eval_mode:
             img_seq = self.aug(img_seq)  # (B*obs_horizon, C, H, W)
         visual_feature = self.visual_encoder(img_seq)  # (B*obs_horizon, D)
         visual_feature = visual_feature.reshape(
-            rgb.shape[0], self.obs_horizon, visual_feature.shape[1]
+            batch_size, self.obs_horizon, visual_feature.shape[1]
         )  # (B, obs_horizon, D)
         feature = torch.cat(
             (visual_feature, obs_seq["state"]), dim=-1
@@ -187,7 +221,7 @@ class Agent(nn.Module):
 
         return F.mse_loss(noise_pred, noise)
 
-    def get_action(self, obs_seq):
+    def get_action(self, obs_seq, prompt):
         # init scheduler
         # self.noise_scheduler.set_timesteps(self.num_diffusion_iters)
         # set_timesteps will change noise_scheduler.timesteps is only used in noise_scheduler.step()
@@ -197,8 +231,9 @@ class Agent(nn.Module):
         # obs_seq['state']: (B, obs_horizon, obs_state_dim)
         B = obs_seq["state"].shape[0]
         with torch.no_grad():
-            obs_seq["rgb"] = obs_seq["rgb"].permute(0, 1, 4, 2, 3)
-            if args.depth:
+            if self.include_rgb:
+                obs_seq["rgb"] = obs_seq["rgb"].permute(0, 1, 4, 2, 3)
+            if self.include_depth:
                 obs_seq["depth"] = obs_seq["depth"].permute(0, 1, 4, 2, 3)
 
             obs_cond = self.encode_obs(
@@ -242,8 +277,8 @@ def save_ckpt(run_name, tag):
         f"runs/{run_name}/checkpoints/{tag}.pt",
     )
 
-def load_ckpt(run_name, tag):
-    checkpoint = torch.load(f"runs/{run_name}/checkpoints/{tag}.pt")
+def load_ckpt(ckpt_name, tag):
+    checkpoint = torch.load(f"runs/{ckpt_name}/checkpoints/{tag}.pt")
     agent.load_state_dict(checkpoint["agent"])
     ema_agent.load_state_dict(checkpoint["ema_agent"])
     return agent, ema_agent
@@ -251,6 +286,11 @@ def load_ckpt(run_name, tag):
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    if args.ckpt_exp_name is None:
+        args.ckpt_exp_name = os.path.basename(__file__)[: -len(".py")]
+        ckpt_name = f"{args.env_id}__{args.ckpt_exp_name}__{args.seed}__{int(time.time())}"
+    else:
+        ckpt_name = args.ckpt_exp_name
 
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
@@ -268,12 +308,11 @@ if __name__ == "__main__":
     env_kwargs = dict(
         control_mode=args.control_mode,
         reward_mode="sparse",
-        obs_mode="rgb",
+        obs_mode=args.obs_mode,
         render_mode="rgb_array",
-        sensor_configs=dict(shader_pack=args.shader),
         human_render_camera_configs=dict(shader_pack=args.shader),
         viewer_camera_configs=dict(shader_pack=args.shader),
-        mode="eval"
+        # mode="eval"
     )
     if args.max_episode_steps is not None:
         env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -285,9 +324,9 @@ if __name__ == "__main__":
         env_kwargs,
         other_kwargs,
         video_dir=f"runs/{run_name}/videos" if args.capture_video else None,
-        wrappers=[partial(FlattenRGBDObservationWrapper, sep_depth=True)],
+        wrappers=[FlattenRGBDObservationWrapper],
     )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs/{ckpt_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s"
@@ -297,7 +336,7 @@ if __name__ == "__main__":
     agent = Agent(envs, args).to(device)
     ema_agent = Agent(envs, args).to(device)
     # Load checkpoint
-    agent, ema_agent = load_ckpt(run_name, "best_eval_success_at_end")
+    agent, ema_agent = load_ckpt(ckpt_name, "best_eval_success_at_end")
     ema = EMAModel(parameters=agent.parameters(), power=0.75)
 
     # ---------------------------------------------------------------------------- #

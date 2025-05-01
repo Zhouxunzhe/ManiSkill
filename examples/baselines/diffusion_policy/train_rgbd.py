@@ -290,7 +290,7 @@ class Agent(nn.Module):
         elif args.visual_encoder == 'resnet':
             from diffusion_policy.encoders.resnet import ResNetEncoder
             self.visual_encoder = ResNetEncoder(
-                out_dim=visual_feature_dim, pool_feature_map=True
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
             )
         elif args.visual_encoder == 'siglip':
             from diffusion_policy.encoders.siglip import SigLIP2Encoder
@@ -450,7 +450,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # create evaluation environment
     env_kwargs = dict(
@@ -563,12 +563,8 @@ if __name__ == "__main__":
             last_tick = time.time()
             ema.copy_to(ema_agent.parameters())
             eval_metrics = evaluate(
-                10, ema_agent, envs, device, args.sim_backend
+                args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
             )
-            if np.mean(eval_metrics['success_at_end']) >= 0.1:
-                eval_metrics = evaluate(
-                    args.num_eval_episodes, ema_agent, envs, device, args.sim_backend
-                )
             timings["eval"] += time.time() - last_tick
 
             print(f"Evaluated {len(eval_metrics['success_at_end'])} episodes")

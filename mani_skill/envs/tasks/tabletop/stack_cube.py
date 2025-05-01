@@ -74,6 +74,7 @@ class StackCubeEnv(BaseEnv):
             name="cubeB",
             initial_pose=sapien.Pose(p=[1, 0, 0.1]),
         )
+        self.cube_colors = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]]
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         with torch.device(self.device):
@@ -108,6 +109,19 @@ class StackCubeEnv(BaseEnv):
                 lock_z=False,
             )
             self.cubeB.set_pose(Pose.create_from_pq(p=xyz, q=qs))
+
+            from sapien.render import RenderBodyComponent
+            import random
+            for _obj in self.cubeA._objs:
+                render_body_component = _obj.find_component_by_type(RenderBodyComponent)
+                for render_shape in render_body_component.render_shapes:
+                    for part in render_shape.parts:
+                        part.material.set_base_color(random.choice(self.cube_colors))
+            for _obj in self.cubeB._objs:
+                render_body_component = _obj.find_component_by_type(RenderBodyComponent)
+                for render_shape in render_body_component.render_shapes:
+                    for part in render_shape.parts:
+                        part.material.set_base_color(random.choice(self.cube_colors))
 
     def evaluate(self):
         pos_A = self.cubeA.pose.p
