@@ -1083,8 +1083,8 @@ if __name__ == "__main__":
     # Configure parameter groups with different learning rates
     param_groups = [
         {"params": diffusion_params, "lr": args.lr, "name": "diffusion"},
-        {"params": video_encoder_params, "lr": args.lr * 10, "name": "video_encoder"},
-        {"params": obs_encoder_params, "lr": args.lr * 10, "name": "obs_encoder"}
+        {"params": video_encoder_params, "lr": args.lr, "name": "video_encoder"},
+        {"params": obs_encoder_params, "lr": args.lr, "name": "obs_encoder"}
     ]
     # Initialize optimizer with parameter groups
     optimizer = optim.AdamW(

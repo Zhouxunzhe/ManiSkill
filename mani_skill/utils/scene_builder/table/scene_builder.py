@@ -95,10 +95,25 @@ class TableSceneBuilder(SceneBuilder):
             self.env.agent.reset(qpos)
             self.env.agent.robot.set_pose(sapien.Pose([-0.615, 0, 0]))
         elif self.env.robot_uids == "panda_wristcam":
+            from mani_skill.envs.tasks import FoldSuitcaseEnv
             # fmt: off
             qpos = np.array(
                 [0.0, np.pi / 8, 0, -np.pi * 5 / 8, 0, np.pi * 3 / 4, -np.pi / 4, 0.04, 0.04]
             )
+            if isinstance(self.env, FoldSuitcaseEnv):
+                qpos = np.array(
+                    [
+                        0.0 + np.random.uniform(-1, 1) * 0.3,
+                        -np.pi * 1 / 8 + np.random.uniform(-1, 1) * 0.1,
+                        0 + np.random.uniform(-1, 1) * 0.3,
+                        -np.pi * 6 / 8 + np.random.uniform(-1, 1) * 0.1,
+                        0 + np.random.uniform(-1, 1) * 0.2,
+                        np.pi * 3 / 4 + np.random.uniform(-1, 1) * 0.3,
+                        np.pi / 4,
+                        0.04,
+                        0.04
+                    ]
+                )
             # fmt: on
             if self.env._enhanced_determinism:
                 qpos = (
