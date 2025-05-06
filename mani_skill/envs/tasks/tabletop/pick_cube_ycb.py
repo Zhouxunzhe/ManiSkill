@@ -209,11 +209,12 @@ class PickCubeYCBEnv(BaseEnv):
             self.source_obj = self._objs[1]
             self.target_obj = self._objs[0]
 
-        multi_task = True
+        multi_task = False
         if not multi_task:
             self.is_pour = False
             self.source_obj = self.cube1
-            self.target_obj = self._objs[0]
+            # self.target_obj = self._objs[0]
+            self.target_obj = self.cube2
 
         self._get_prompt()
 

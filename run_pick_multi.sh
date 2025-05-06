@@ -46,8 +46,16 @@ python -m examples.baselines.diffusion_policy.train_rgbd_video --env-id PickCube
 python -m examples.baselines.diffusion_policy.eval_rgbd_video --env-id PickCubeYCB-v1 \
   --video-path /home/engram/zhouxunzhe/ManiSkill/examples/baselines/hyper_net/processed_data \
   --control-mode "pd_joint_delta_pos" --shader rt --max_episode_steps 500 \
-  --num_eval_episodes 100 --num_eval_envs 1 \
-  --obs_mode rgb+depth --exp_name PickCubeYCB-multi_task_4-diffusion_video-lower-diffusion-320
+  --num_eval_episodes 10 --num_eval_envs 1 \
+  --obs_mode rgb+depth --ckpt_exp_name PickCubeYCB-multi_task_4-diffusion_video-lower-diffusion-320 \
+  --exp_name test-PickCubeYCB-stack_red_cube_blue_cube-diffusion_video-lower-diffusion-320
+
+python -m examples.baselines.diffusion_policy.eval_rgbd_video --env-id PickCubeYCB-v1 \
+  --video-path /home/engram/zhouxunzhe/ManiSkill/examples/baselines/hyper_net/processed_data \
+  --control-mode "pd_joint_delta_pos" --shader rt --max_episode_steps 500 \
+  --num_eval_episodes 10 --num_eval_envs 1 \
+  --obs_mode rgb+depth --ckpt_exp_name PickCubeYCB-multi_task_4-diffusion_video-lower-diffusion-320 \
+  --exp_name test-PickCubeYCB-stack_blue_cube_red_cube-diffusion_video-lower-diffusion-320
 
 # Train HyperNet
 python -m examples.baselines.hyper_net.train_hypernet_diffusion_resnet --env-id PickCubeYCB-v1 \

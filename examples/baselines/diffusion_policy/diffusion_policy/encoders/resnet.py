@@ -21,7 +21,7 @@ class ResNetEncoder(nn.Module):
             out_dim=256,
             pool_feature_map=True,
             last_act=True,
-            freeze_backbone=False,
+            freeze_backbone=True,
             pretrained=True
     ):
         super().__init__()

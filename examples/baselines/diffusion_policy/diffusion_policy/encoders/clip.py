@@ -1,37 +1,103 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
 import clip
-from torchvision.transforms import Resize, Normalize, Compose
+from torch.hub import load
+
+def make_mlp(in_channels, mlp_channels, act_builder=nn.ReLU, last_act=True):
+    c_in = in_channels
+    module_list = []
+    for idx, c_out in enumerate(mlp_channels):
+        module_list.append(nn.Linear(c_in, c_out))
+        if last_act or idx < len(mlp_channels) - 1:
+            module_list.append(act_builder())
+        c_in = c_out
+    return nn.Sequential(*module_list)
 
 class CLIPEncoder(nn.Module):
-    def __init__(self, out_dim=256, model_name="ViT-B/32", device="cuda" if torch.cuda.is_available() else "cpu"):
+    def __init__(
+            self,
+            in_channels=3,
+            out_dim=256,
+            pool_feature_map=True,
+            last_act=True,
+            freeze_backbone=True,
+            pretrained=True,
+            model_name="ViT-B/32",
+            device="cpu"
+    ):
         super().__init__()
-        self.device = device
-        self.clip_model, _ = clip.load(model_name, device=self.device)
         self.out_dim = out_dim
-        self.preprocess = Compose([
-            Resize((224, 224)),  # 确保图像尺寸正确
-            Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
-        ])
-        self.fc = nn.Identity() if self.clip_model.visual.output_dim == out_dim else nn.Linear(self.clip_model.visual.output_dim, out_dim)
+        self.device = device
+
+        if not pretrained:
+            raise ValueError("CLIPEncoder only supports pretrained models")
+        self.model, self.preprocess = clip.load(model_name, device=device)
+        self.backbone = self.model.visual
+
+        # 处理输入通道数不是3的情况
+        if in_channels != 3:
+            original_conv = self.backbone.conv1
+            new_conv = nn.Conv2d(
+                in_channels,
+                original_conv.out_channels,
+                kernel_size=original_conv.kernel_size,
+                stride=original_conv.stride,
+                padding=original_conv.padding,
+                bias=original_conv.bias is not None
+            )
+            with torch.no_grad():
+                new_conv.weight[:, :3, :, :] = original_conv.weight.clone()
+                nn.init.kaiming_normal_(new_conv.weight[:, 3:, :, :], mode='fan_out', nonlinearity='relu')
+                if new_conv.bias is not None:
+                    new_conv.bias.data = original_conv.bias.clone()
+            self.backbone.conv1 = new_conv
+
+        if freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+
+        self.feature_dim = 512  # ViT-B/32的隐藏维度
+
+        if pool_feature_map:
+            self.fc = make_mlp(self.feature_dim, [out_dim], last_act=last_act)
+        else:
+            raise ValueError("CLIP ViT uses [CLS] token, please set pool_feature_map=True")
+
+        self.reset_parameters()
 
     def reset_parameters(self):
-        if isinstance(self.fc, nn.Linear):
-            nn.init.xavier_uniform_(self.fc.weight)
-            if self.fc.bias is not None:
-                nn.init.zeros_(self.fc.bias)
+        for name, module in self.fc.named_modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def forward(self, image):
-        image = self.preprocess(image.to(self.device))
-        with torch.no_grad():
-            x = self.clip_model.encode_image(image)
-        x = x.to(self.fc.weight.dtype)
-        return self.fc(x)
+        image = F.interpolate(image, size=(224, 224), mode='bilinear', align_corners=False)
+        features = self.backbone(image)
+        if features.dim() == 3:
+            cls_features = features[:, 0, :]  # Extract CLS token if 3D
+        elif features.dim() == 2:
+            cls_features = features  # Use directly if 2D
+        else:
+            raise ValueError(f"Unexpected feature shape: {features.shape}")
+        output = self.fc(cls_features)
+        return output
 
-# Example usage
-if __name__ == "__main__":
-    # Example input: batch of 3 RGB images with size 224x224
-    example_input = torch.randn(3, 3, 224, 224)
-    encoder = CLIPEncoder(out_dim=256)
-    output = encoder(example_input)
-    print(output.shape)  # Should be [3, 256]
+    def get_feature_extractor(self):
+        return self.backbone
+
+    def unfreeze_layers(self, start_layer=None):
+        if start_layer is None:
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            return
+        found_layer = False
+        for name, module in self.backbone.named_modules():
+            if start_layer in name:
+                found_layer = True
+            if found_layer:
+                for param in module.parameters():
+                    param.requires_grad = True

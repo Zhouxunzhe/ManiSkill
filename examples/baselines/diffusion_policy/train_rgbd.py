@@ -278,14 +278,14 @@ class Agent(nn.Module):
                 in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
             )
         elif args.visual_encoder == 'clip':
-            from diffusion_policy.encoders.clip import CLIPEncoder
+            from .diffusion_policy.encoders.clip import CLIPEncoder
             self.visual_encoder = CLIPEncoder(
-                out_dim=visual_feature_dim
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
             )
         elif args.visual_encoder == 'dinov2':
-            from diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            from .diffusion_policy.encoders.dinov2 import DINOv2Encoder
             self.visual_encoder = DINOv2Encoder(
-                out_dim=visual_feature_dim
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
             )
         elif args.visual_encoder == 'resnet':
             from diffusion_policy.encoders.resnet import ResNetEncoder
