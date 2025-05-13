@@ -403,29 +403,9 @@ class XArm6Robotiq(BaseAgent):
         )
         return torch.logical_and(lflag, rflag)
 
-    @staticmethod
-    def build_grasp_pose(approaching, closing, center):
-        """Build a grasp pose ()."""
-        assert np.abs(1 - np.linalg.norm(approaching)) < 1e-3
-        assert np.abs(1 - np.linalg.norm(closing)) < 1e-3
-        assert np.abs(approaching @ closing) <= 1e-3
-        ortho = np.cross(closing, approaching)
-        T = np.eye(4)
-        T[:3, :3] = np.stack([ortho, closing, approaching], axis=1)
-        T[:3, 3] = center
-        return sapien.Pose(T)
-
     def is_static(self, threshold: float = 0.2):
         qvel = self.robot.get_qvel()[..., :-6]
         return torch.max(torch.abs(qvel), 1)[0] <= threshold
-
-    @property
-    def tcp_pos(self):
-        return self.tcp.pose.p
-
-    @property
-    def tcp_pose(self):
-        return self.tcp.pose
 
 
 @register_agent(asset_download_ids=["xarm6"])

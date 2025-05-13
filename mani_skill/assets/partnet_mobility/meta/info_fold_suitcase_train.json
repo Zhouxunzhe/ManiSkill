@@ -1,0 +1,22 @@
+{
+    "100767": {
+        "num_target_links": 4,
+        "partnet_mobility_id": 100767,
+        "scale": 0.3
+    },
+    "101668": {
+        "num_target_links": 4,
+        "partnet_mobility_id": 101668,
+        "scale": 0.3
+    },
+    "103755": {
+        "num_target_links": 2,
+        "partnet_mobility_id": 103755,
+        "scale": 0.3
+    },
+    "103761": {
+        "num_target_links": 2,
+        "partnet_mobility_id": 103761,
+        "scale": 0.3
+    }
+}

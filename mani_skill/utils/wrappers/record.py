@@ -391,27 +391,50 @@ class RecordEpisode(gym.Wrapper):
                         f"State dictionary is not consistent, disabling recording of environment states for {self.env}"
                     )
                     self._already_warned_about_state_dict_inconsistency = True
-            first_step = Step(
-                state=None,
-                observation=common.to_numpy(common.batch(obs)),
-                # note first reward/action etc. are ignored when saving trajectories to disk
-                action=common.to_numpy(common.batch(action.repeat(self.num_envs, 0))),
-                reward=np.zeros(
-                    (
-                        1,
-                        self.num_envs,
+            if isinstance(action, dict):
+                first_step = Step(
+                    state=None,
+                    observation=common.to_numpy(common.batch(obs)),
+                    # note first reward/action etc. are ignored when saving trajectories to disk
+                    action=common.to_numpy(common.batch(action)),
+                    reward=np.zeros(
+                        (
+                            1,
+                            self.num_envs,
+                        ),
+                        dtype=float,
                     ),
-                    dtype=float,
-                ),
-                # terminated and truncated are fixed to be True at the start to indicate the start of an episode.
-                # an episode is done when one of these is True otherwise the trajectory is incomplete / a partial episode
-                terminated=np.ones((1, self.num_envs), dtype=bool),
-                truncated=np.ones((1, self.num_envs), dtype=bool),
-                done=np.ones((1, self.num_envs), dtype=bool),
-                success=np.zeros((1, self.num_envs), dtype=bool),
-                fail=np.zeros((1, self.num_envs), dtype=bool),
-                env_episode_ptr=np.zeros((self.num_envs,), dtype=int),
-            )
+                    # terminated and truncated are fixed to be True at the start to indicate the start of an episode.
+                    # an episode is done when one of these is True otherwise the trajectory is incomplete / a partial episode
+                    terminated=np.ones((1, self.num_envs), dtype=bool),
+                    truncated=np.ones((1, self.num_envs), dtype=bool),
+                    done=np.ones((1, self.num_envs), dtype=bool),
+                    success=np.zeros((1, self.num_envs), dtype=bool),
+                    fail=np.zeros((1, self.num_envs), dtype=bool),
+                    env_episode_ptr=np.zeros((self.num_envs,), dtype=int),
+                )
+            else:
+                first_step = Step(
+                    state=None,
+                    observation=common.to_numpy(common.batch(obs)),
+                    # note first reward/action etc. are ignored when saving trajectories to disk
+                    action=common.to_numpy(common.batch(action.repeat(self.num_envs, 0))),
+                    reward=np.zeros(
+                        (
+                            1,
+                            self.num_envs,
+                        ),
+                        dtype=float,
+                    ),
+                    # terminated and truncated are fixed to be True at the start to indicate the start of an episode.
+                    # an episode is done when one of these is True otherwise the trajectory is incomplete / a partial episode
+                    terminated=np.ones((1, self.num_envs), dtype=bool),
+                    truncated=np.ones((1, self.num_envs), dtype=bool),
+                    done=np.ones((1, self.num_envs), dtype=bool),
+                    success=np.zeros((1, self.num_envs), dtype=bool),
+                    fail=np.zeros((1, self.num_envs), dtype=bool),
+                    env_episode_ptr=np.zeros((self.num_envs,), dtype=int),
+                )
             if self.record_env_state:
                 first_step.state = common.to_numpy(common.batch(state_dict))
             env_idx = np.arange(self.num_envs)

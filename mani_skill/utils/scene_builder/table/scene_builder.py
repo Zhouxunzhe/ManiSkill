@@ -10,18 +10,17 @@ from transforms3d.euler import euler2quat
 
 from mani_skill.agents.multi_agent import MultiAgent
 from mani_skill.agents.robots.fetch import FETCH_WHEELS_COLLISION_BIT
+from mani_skill.agents.robots.realman import REALMAN_WHEELS_COLLISION_BIT, REALMAN_BASE_COLLISION_BIT
 from mani_skill.utils.building.ground import build_ground
 from mani_skill.utils.scene_builder import SceneBuilder
 
 
+# TODO (stao): make the build and initialize api consistent with other scenes
 class TableSceneBuilder(SceneBuilder):
-    """A simple scene builder that adds a table to the scene such that the height of the table is at 0, and
-    gives reasonable initial poses for robots."""
-
-    def build(self):
+    def build(self, scale=1.75, table_path="table.glb"):
         builder = self.scene.create_actor_builder()
         model_dir = Path(osp.dirname(__file__)) / "assets"
-        table_model_file = str(model_dir / "table.glb")
+        table_model_file = str(model_dir / table_path)
         scale = 1.75
 
         table_pose = sapien.Pose(q=euler2quat(0, 0, np.pi / 2))
@@ -68,7 +67,7 @@ class TableSceneBuilder(SceneBuilder):
             qpos = np.array(
                 [
                     0.0,
-                    np.pi / 8,
+                    -np.pi / 8,
                     0,
                     -np.pi * 5 / 8,
                     0,
@@ -96,10 +95,25 @@ class TableSceneBuilder(SceneBuilder):
             self.env.agent.reset(qpos)
             self.env.agent.robot.set_pose(sapien.Pose([-0.615, 0, 0]))
         elif self.env.robot_uids == "panda_wristcam":
+            from mani_skill.envs.tasks import FoldSuitcaseEnv
             # fmt: off
             qpos = np.array(
                 [0.0, np.pi / 8, 0, -np.pi * 5 / 8, 0, np.pi * 3 / 4, -np.pi / 4, 0.04, 0.04]
             )
+            if isinstance(self.env, FoldSuitcaseEnv):
+                qpos = np.array(
+                    [
+                        0.0 + np.random.uniform(-1, 1) * 0.3,
+                        -np.pi * 1 / 8 + np.random.uniform(-1, 1) * 0.1,
+                        0 + np.random.uniform(-1, 1) * 0.3,
+                        -np.pi * 6 / 8 + np.random.uniform(-1, 1) * 0.1,
+                        0 + np.random.uniform(-1, 1) * 0.2,
+                        np.pi * 3 / 4 + np.random.uniform(-1, 1) * 0.3,
+                        np.pi / 4,
+                        0.04,
+                        0.04
+                    ]
+                )
             # fmt: on
             if self.env._enhanced_determinism:
                 qpos = (
@@ -118,6 +132,27 @@ class TableSceneBuilder(SceneBuilder):
             qpos[:, -2:] = 0.04
             self.env.agent.reset(qpos)
             self.env.agent.robot.set_pose(sapien.Pose([-0.615, 0, 0]))
+        elif self.env.robot_uids == "xmate3_robotiq":
+            qpos = np.array(
+                [0, np.pi / 6, 0, np.pi / 3, 0, np.pi / 2, -np.pi / 2, 0, 0]
+            )
+            if self.env._enhanced_determinism:
+                qpos = (
+                    self.env._batched_episode_rng[env_idx].normal(
+                        0, self.robot_init_qpos_noise, len(qpos)
+                    )
+                    + qpos
+                )
+            else:
+                qpos = (
+                    self.env._episode_rng.normal(
+                        0, self.robot_init_qpos_noise, (b, len(qpos))
+                    )
+                    + qpos
+                )
+            qpos[:, -2:] = 0
+            self.env.agent.reset(qpos)
+            self.env.agent.robot.set_pose(sapien.Pose([-0.562, 0, 0]))
         elif self.env.robot_uids in [
             "xarm6_allegro_left",
             "xarm6_allegro_right",
@@ -158,6 +193,10 @@ class TableSceneBuilder(SceneBuilder):
 
             self.ground.set_collision_group_bit(
                 group=2, bit_idx=FETCH_WHEELS_COLLISION_BIT, bit=1
+            )
+        elif self.env.robot_uids == "mobile_realman":
+            self.ground.set_collision_group_bit(
+                group=2, bit_idx=REALMAN_BASE_COLLISION_BIT, bit=1
             )
         elif self.env.robot_uids == ("panda", "panda"):
             agent: MultiAgent = self.env.agent
@@ -270,15 +309,3 @@ class TableSceneBuilder(SceneBuilder):
                 )
             self.env.agent.reset(qpos)
             self.env.agent.robot.set_pose(sapien.Pose([-0.615, 0, 0]))
-        elif self.env.robot_uids == "so100":
-            qpos = np.array([0, np.pi / 2, np.pi / 2, np.pi / 2, -np.pi / 2, 1.0])
-            qpos = (
-                self.env._episode_rng.normal(
-                    0, self.robot_init_qpos_noise, (b, len(qpos))
-                )
-                + qpos
-            )
-            self.env.agent.reset(qpos)
-            self.env.agent.robot.set_pose(
-                sapien.Pose([-0.725, 0, 0], q=euler2quat(0, 0, np.pi / 2))
-            )

@@ -1,27 +1,39 @@
 from mani_skill import ASSET_DIR, PACKAGE_ASSET_DIR
 from mani_skill.envs.scene import ManiSkillScene
 from mani_skill.utils import sapien_utils
+from mani_skill.utils.geometry.trimesh_utils import (
+    merge_meshes,
+)
 from mani_skill.utils.io_utils import load_json
 
 PARTNET_MOBILITY = None
 
 
-def _load_partnet_mobility_dataset():
+def _load_partnet_mobility_dataset(mode):
     global PARTNET_MOBILITY
     """loads preprocssed partnet mobility metadata"""
-    PARTNET_MOBILITY = {
-        "model_data": load_json(
-            PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_cabinet_drawer_train.json"
-        ),
-    }
-    for data_file in ["info_cabinet_door_train.json", "info_faucet_train.json"]:
-        PARTNET_MOBILITY["model_data"].update(
-            load_json(PACKAGE_ASSET_DIR / "partnet_mobility/meta" / data_file)
-        )
+    # load suitcase partnet model
+    if mode in ["train", "eval", "box", "laptop", "suitcase"]:
+        PARTNET_MOBILITY = {
+            "model_data": load_json(
+                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_fold_all.json"
+            ),
+        }
+    else:
+        PARTNET_MOBILITY = {
+            "model_data": load_json(
+                PACKAGE_ASSET_DIR / "partnet_mobility/meta/info_cabinet_drawer_train.json"
+            ),
+        }
+        for data_file in ["info_cabinet_door_train.json", "info_faucet_train.json"]:
+            PARTNET_MOBILITY["model_data"].update(
+                load_json(PACKAGE_ASSET_DIR / "partnet_mobility/meta" / data_file)
+            )
 
     def find_urdf_path(model_id):
         model_dir = ASSET_DIR / "partnet_mobility/dataset" / str(model_id)
-        urdf_names = ["mobility_cvx.urdf", "mobility_fixed.urdf"]
+        # urdf_names = ["mobility_cvx.urdf", "mobility_fixed.urdf"]
+        urdf_names = ["mobility.urdf"]
         for urdf_name in urdf_names:
             urdf_path = model_dir / urdf_name
             if urdf_path.exists():
@@ -44,10 +56,11 @@ def get_partnet_mobility_builder(
     id: str,
     fix_root_link: bool = True,
     urdf_config: dict = dict(),
+    mode: str = None,
 ):
     global PARTNET_MOBILITY
     if PARTNET_MOBILITY is None:
-        _load_partnet_mobility_dataset()
+        _load_partnet_mobility_dataset(mode)
     metadata = PARTNET_MOBILITY["model_data"][id]
     loader = scene.create_urdf_loader()
     loader.fix_root_link = fix_root_link

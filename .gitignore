@@ -44,3 +44,9 @@ imgui.ini
 # testing
 .coverage*
 htmlcov/
+/runs/
+/exps/
+/wandb/
+/figures/test/
+*h5
+/examples/baselines/hyper_net/processed_data/

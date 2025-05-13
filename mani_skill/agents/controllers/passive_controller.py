@@ -13,8 +13,6 @@ class PassiveController(BaseController):
     """
 
     config: "PassiveControllerConfig"
-    sets_target_qpos = False
-    sets_target_qvel = False
 
     def set_drive_property(self):
         n = len(self.joints)

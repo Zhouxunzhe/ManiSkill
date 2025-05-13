@@ -9,6 +9,7 @@ import sapien
 import sapien.render
 import torch
 from torch._tensor import Tensor
+import torch.nn.functional as F
 
 from mani_skill.render import (
     PREBUILT_SHADER_CONFIGS,
@@ -196,6 +197,7 @@ class Camera(BaseSensor):
         normal: bool = False,
         albedo: bool = False,
         apply_texture_transforms: bool = True,
+        fisheye: bool = False
     ):
         images_dict = {}
         # determine which textures are needed to get the desired modalities
@@ -220,6 +222,37 @@ class Camera(BaseSensor):
 
         # fetch the image data
         output_textures = self.camera.get_picture(required_texture_names)
+        ### TODO(zxz): refine FishEye
+        # if fisheye:
+        #     import cv2
+        #     def pinhole_to_fisheye(img, focal_length, crop_size):
+        #         h, w = img.shape[0], img.shape[1]
+        #         dstImg = np.zeros(img.shape, np.uint8)
+        #         ux, uy = w / 2, h / 2
+        #         for i in range(h):
+        #             for j in range(w):
+        #                 dx, dy = j - ux, i - uy
+        #                 rc = np.sqrt(dx ** 2 + dy ** 2)
+        #                 theta = np.arctan2(rc, focal_length)
+        #                 gama = np.arctan2(dy, dx)
+        #                 rf = focal_length * theta
+        #                 xf = rf * np.cos(gama)
+        #                 yf = rf * np.sin(gama)
+        #                 x = int(xf + ux)
+        #                 y = int(yf + uy)
+        #                 dstImg[y][x] = img[i][j]
+        #         crop_x = crop_size[0] // 2
+        #         crop_y = crop_size[1] // 2
+        #         dstImg = dstImg[int(uy-crop_y):int(uy+crop_y), int(ux-crop_x):int(ux+crop_x)]
+        #         return dstImg
+        #
+        #     crop_size = (128, 128)
+        #     pinhole_image = (output_textures[0][0][:,:,:3].numpy() * 255).astype(np.uint8).copy()
+        #     focal_length = 100
+        #     fisheye_image = pinhole_to_fisheye(pinhole_image, focal_length, crop_size)
+        #     cv2.imwrite("fisheye_image.jpg", fisheye_image)
+        #     output_textures[0][0][0][:,:,:3] = fisheye_image
+
         for texture_name, texture in zip(required_texture_names, output_textures):
             if apply_texture_transforms:
                 images_dict |= self.config.shader_config.texture_transforms[

@@ -8,3 +8,7 @@ from .lift_peg_upright import solve as solveLiftPegUpright
 from .pull_cube import solve as solvePullCube
 from .draw_svg import solve as solveDrawSVG
 from .draw_triangle import solve as solveDrawTriangle
+from .fold_suitcase import solve as solveFoldSuitcase
+from .two_robot_fold import solve as solveTwoRobotFold
+from .pick_cube_ycb import solve as solvePickCubeYCB
+from .two_robot_pick_cube_ycb import solve as solveTwoRobotPickCubeYCB

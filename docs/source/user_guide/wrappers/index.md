@@ -6,5 +6,4 @@
 
 record
 flatten
-action_repeat
 ```

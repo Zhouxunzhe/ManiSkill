@@ -45,12 +45,12 @@ class PushCubeEnv(BaseEnv):
     - the target goal region is marked by a red/white circular target. The position of the target is fixed to be the cube xy position + [0.1 + goal_radius, 0]
 
     **Success Conditions:**
-    - the cube's xy position is within goal_radius (default 0.1) of the target's xy position by euclidean distance and the cube is still on the table.
+    - the cube's xy position is within goal_radius (default 0.1) of the target's xy position by euclidean distance.
     """
 
     _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/PushCube-v1_rt.mp4"
 
-    SUPPORTED_ROBOTS = ["panda", "fetch"]
+    SUPPORTED_ROBOTS = ["panda_wristcam", "fetch"]
 
     # Specify some supported robot types
     agent: Union[Panda, Fetch]
@@ -59,7 +59,7 @@ class PushCubeEnv(BaseEnv):
     goal_radius = 0.1
     cube_half_size = 0.02
 
-    def __init__(self, *args, robot_uids="panda", robot_init_qpos_noise=0.02, **kwargs):
+    def __init__(self, *args, robot_uids="panda_wristcam", robot_init_qpos_noise=0.02, **kwargs):
         # specifying robot_uids="panda" as the default means gym.make("PushCube-v1") will default to using the panda arm.
         self.robot_init_qpos_noise = robot_init_qpos_noise
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
@@ -226,22 +226,12 @@ class PushCubeEnv(BaseEnv):
         )
         place_reward = 1 - torch.tanh(5 * obj_to_goal_dist)
         reward += place_reward * reached
-        
-        # Compute a z reward to encourage the robot to keep the cube on the table
-        desired_obj_z = self.cube_half_size
-        current_obj_z = self.obj.pose.p[..., 2]
-        z_deviation = torch.abs(current_obj_z - desired_obj_z)
-        z_reward = 1 - torch.tanh(5 * z_deviation)
-        # We multiply the z reward by the place_reward and reached mask so that 
-        #   we only add the z reward if the robot has reached the desired push pose
-        #   and the z reward becomes more important as the robot gets closer to the goal.
-        reward += place_reward * z_reward * reached
 
         # assign rewards to parallel environments that achieved success to the maximum of 3.
-        reward[info["success"]] = 4
+        reward[info["success"]] = 3
         return reward
 
     def compute_normalized_dense_reward(self, obs: Any, action: Array, info: Dict):
         # this should be equal to compute_dense_reward / max possible reward
-        max_reward = 4.0
+        max_reward = 3.0
         return self.compute_dense_reward(obs=obs, action=action, info=info) / max_reward

@@ -30,7 +30,6 @@ from torch.utils.tensorboard import SummaryWriter
 from diffusion_policy.conditional_unet1d import ConditionalUnet1D
 from diffusion_policy.evaluate import evaluate
 from diffusion_policy.make_env import make_eval_envs
-from diffusion_policy.plain_conv import PlainConv
 from diffusion_policy.utils import (IterationBasedBatchSampler,
                                     build_state_obs_extractor, convert_obs,
                                     worker_init_fn)
@@ -72,16 +71,16 @@ class Args:
     lr: float = 1e-4
     """the learning rate of the diffusion policy"""
     obs_horizon: int = 2  # Seems not very important in ManiSkill, 1, 2, 4 work well
-    act_horizon: int = 8  # Seems not very important in ManiSkill, 4, 8, 15 work well
+    act_horizon: int = 4  # Seems not very important in ManiSkill, 4, 8, 15 work well
     pred_horizon: int = (
         16  # 16->8 leads to worse performance, maybe it is like generate a half image; 16->32, improvement is very marginal
     )
-    diffusion_step_embed_dim: int = 64  # not very important
+    diffusion_step_embed_dim: int = 32  # not very important
     unet_dims: List[int] = field(
-        default_factory=lambda: [64, 128, 256]
+        default_factory=lambda: [48, 72, 96]
     )  # default setting is about ~4.5M params
     n_groups: int = (
-        8  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
+        4  # jigu says it is better to let each group have at least 8 channels; it seems 4 and 8 are simila
     )
 
     # Environment/experiment specific arguments
@@ -106,7 +105,11 @@ class Args:
     """the number of workers to use for loading the training data in the torch dataloader"""
     control_mode: str = "pd_joint_delta_pos"
     """the control mode to use for the evaluation environments. Must match the control mode of the demonstration dataset."""
-
+    shader: str = "default"
+    """Change shader used for rendering. Default is 'default' which is very fast. Can also be 'rt' for ray tracing and generating photo-realistic renders. 
+    Can also be 'rt-fast' for a faster but lower quality ray-traced renderer"""
+    visual_encoder: str = "plain_conv"
+    """Vision encoder. can be "plain_conv", "clip", "dinov2", "resnet"""
     # additional tags/configs for logging purposes to wandb and shared comparisons with other algorithms
     demo_type: Optional[str] = None
 
@@ -269,9 +272,31 @@ class Agent(nn.Module):
             total_visual_channels += env.single_observation_space["depth"].shape[-1]
 
         visual_feature_dim = 256
-        self.visual_encoder = PlainConv(
-            in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
-        )
+        if args.visual_encoder == 'plain_conv':
+            from diffusion_policy.encoders.plain_conv import PlainConv
+            self.visual_encoder = PlainConv(
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'clip':
+            from .diffusion_policy.encoders.clip import CLIPEncoder
+            self.visual_encoder = CLIPEncoder(
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'dinov2':
+            from .diffusion_policy.encoders.dinov2 import DINOv2Encoder
+            self.visual_encoder = DINOv2Encoder(
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'resnet':
+            from diffusion_policy.encoders.resnet import ResNetEncoder
+            self.visual_encoder = ResNetEncoder(
+                in_channels=total_visual_channels, out_dim=visual_feature_dim, pool_feature_map=True
+            )
+        elif args.visual_encoder == 'siglip':
+            from diffusion_policy.encoders.siglip import SigLIP2Encoder
+            self.visual_encoder = SigLIP2Encoder(
+                out_dim=visual_feature_dim
+            )
         self.noise_pred_net = ConditionalUnet1D(
             input_dim=self.act_dim,  # act_horizon is not used (U-Net doesn't care)
             global_cond_dim=self.obs_horizon * (visual_feature_dim + obs_state_dim),
@@ -336,7 +361,7 @@ class Agent(nn.Module):
 
         return F.mse_loss(noise_pred, noise)
 
-    def get_action(self, obs_seq):
+    def get_action(self, obs_seq, prompt):
         # init scheduler
         # self.noise_scheduler.set_timesteps(self.num_diffusion_iters)
         # set_timesteps will change noise_scheduler.timesteps is only used in noise_scheduler.step()
@@ -433,7 +458,9 @@ if __name__ == "__main__":
         reward_mode="sparse",
         obs_mode=args.obs_mode,
         render_mode="rgb_array",
-        human_render_camera_configs=dict(shader_pack="default")
+        human_render_camera_configs=dict(shader_pack="default"),
+        viewer_camera_configs=dict(shader_pack=args.shader),
+        # mode="eval"
     )
     assert args.max_episode_steps != None, "max_episode_steps must be specified as imitation learning algorithms task solve speed is dependent on the data you train on"
     env_kwargs["max_episode_steps"] = args.max_episode_steps
@@ -481,7 +508,7 @@ if __name__ == "__main__":
 
     # create temporary env to get original observation space as AsyncVectorEnv (CPU parallelization) doesn't permit that
     tmp_env = gym.make(args.env_id, **env_kwargs)
-    orignal_obs_space = tmp_env.observation_space
+    original_obs_space = tmp_env.observation_space
     # determine whether the env will return rgb and/or depth data
     include_rgb = tmp_env.unwrapped.obs_mode_struct.visual.rgb
     include_depth = tmp_env.unwrapped.obs_mode_struct.visual.depth
@@ -490,7 +517,7 @@ if __name__ == "__main__":
     dataset = SmallDemoDataset_DiffusionPolicy(
         data_path=args.demo_path,
         obs_process_fn=obs_process_fn,
-        obs_space=orignal_obs_space,
+        obs_space=original_obs_space,
         include_rgb=include_rgb,
         include_depth=include_depth,
         device=device,
@@ -532,7 +559,7 @@ if __name__ == "__main__":
 
     # define evaluation and logging functions
     def evaluate_and_save_best(iteration):
-        if iteration % args.eval_freq == 0:
+        if iteration % args.eval_freq == 0 and iteration != 0:
             last_tick = time.time()
             ema.copy_to(ema_agent.parameters())
             eval_metrics = evaluate(

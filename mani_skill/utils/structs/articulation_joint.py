@@ -103,6 +103,17 @@ class ArticulationJoint(BaseStruct[physx.PhysxArticulationJoint]):
         else:
             return torch.tensor([self._physx_articulations[0].qpos[self.active_index]])
 
+    def set_qpos(self, des_qpos):
+        assert (
+                self.active_index is not None
+        ), "Inactive joints do not have qpos/qvel values"
+        if self.scene.gpu_sim_enabled:
+            self.px.cuda_articulation_qpos.torch()[
+                self._data_index, self.active_index
+            ] = torch.tensor(des_qpos[self.active_index])
+        else:
+            self._physx_articulations[0].set_qpos(torch.tensor(des_qpos))
+
     @property
     def qvel(self):
         """
